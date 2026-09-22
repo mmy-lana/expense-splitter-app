@@ -1,702 +1,723 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import {
-  ConfigProvider,
-  App as AntdApp,
-  Layout,
-  Typography,
-  Button,
-  Card,
-  Row,
-  Col,
-  Statistic,
-  Input,
-  Modal,
-  Drawer,
-  Form,
-  InputNumber,
-  Select,
-  Radio,
-  Space,
-  Popconfirm,
-  Grid,
-  Spin,
-  message,
-} from 'antd';
-import {
-  PlusOutlined,
-  DollarCircleOutlined,
-  ArrowRightOutlined,
-  DeleteOutlined,
-  ArrowUpOutlined,
-  ArrowDownOutlined,
-  SearchOutlined,
-  ThunderboltFilled,
-  CheckCircleFilled,
-} from '@ant-design/icons';
-import { useLiveQuery } from 'dexie-react-hooks';
-import BigNumber from 'bignumber.js';
-import confetti from 'canvas-confetti';
-import { db } from '../services/db';
-import { seedInitialDataIfEmpty } from '../services/dbSeed';
-import { cleanFinanceMintTheme } from '../theme';
-import { formatMoney } from '../utils/currency';
-import { calculateSimplifiedDebts } from '../utils/debtEngine';
-import { computeSplits } from '../utils/splitEngine';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import type { FC } from 'react';
+import { App as AntdApp, Button, ConfigProvider, Result, Spin, Typography } from 'antd';
+import { ensureSeeded } from '../services/dbSeed';
+import { deleteExpense } from '../services/expenseService';
+import { deleteGroup, removeGroupMember } from '../services/groupService';
+import { exportDatabaseToJson, exportExpensesToCsv } from '../services/exportImport';
+import { cleanFinanceMintTheme, mintPalette, spacing, typography } from '../theme';
 import { useAppStore } from '../stores/useAppStore';
-import type { UserProfile, UUID, SplitType, ExpenseCategory } from '../types';
+import { applyLedgerFilters, useFilterStore } from '../stores/useFilterStore';
+import { buildGroupSummaries, useLedgerData } from '../hooks/useLedger';
+import { ActivityFeedView } from '../components/templates/ActivityFeedView';
+import { DashboardView } from '../components/templates/DashboardView';
+import { FriendsDetailView } from '../components/templates/FriendsDetailView';
+import { FriendsListView } from '../components/templates/FriendsListView';
+import { GroupDetailView } from '../components/templates/GroupDetailView';
+import { GroupsListView } from '../components/templates/GroupsListView';
+import { ResponsiveAppShell } from '../components/templates/ResponsiveAppShell';
+import { DebtSimplificationCard } from '../components/organisms/DebtSimplificationCard';
+import { Card } from 'antd';
+import { PlusCircleOutlined, TeamOutlined } from '@ant-design/icons';
+import { guardRoute, resolveRoute, routeForTab } from './routes';
+import type { AppRoute } from './routes';
+import { calculateNetBalances, calculateSimplifiedDebts } from '../utils/debtEngine';
+import type { CurrencyCode, DebtTransfer, ExpenseItem, UUID } from '../types';
 
-const { Header, Content } = Layout;
-const { useBreakpoint } = Grid;
+/**
+ * Dialog flows are loaded on demand.
+ *
+ * They pull in Ant Design's Form, Upload, DatePicker and Drawer — a large slice
+ * of the library that the dashboard never renders. Splitting them out keeps the
+ * first paint to the ledger itself, and the user pays for a form only when they
+ * open one.
+ */
+const ExpenseFormModal = lazy(() =>
+  import('../components/organisms/ExpenseFormModal').then((module) => ({
+    default: module.ExpenseFormModal,
+  }))
+);
+const SettlementWizard = lazy(() =>
+  import('../components/organisms/SettlementWizard').then((module) => ({
+    default: module.SettlementWizard,
+  }))
+);
+const ReceiptViewerModal = lazy(() =>
+  import('../components/organisms/ReceiptViewerModal').then((module) => ({
+    default: module.ReceiptViewerModal,
+  }))
+);
+const BackupRestoreModal = lazy(() =>
+  import('../components/organisms/BackupRestoreModal').then((module) => ({
+    default: module.BackupRestoreModal,
+  }))
+);
+const GroupFormModal = lazy(() =>
+  import('../components/organisms/GroupFormModal').then((module) => ({
+    default: module.GroupFormModal,
+  }))
+);
 
-const CATEGORIES: { label: string; value: ExpenseCategory }[] = [
-  { label: 'Food & Dining', value: 'FOOD_AND_DRINK' },
-  { label: 'Transportation', value: 'TRANSPORTATION' },
-  { label: 'Groceries', value: 'GROCERIES' },
-  { label: 'Home & Utilities', value: 'HOME_UTILITIES' },
-  { label: 'Lodging', value: 'LODGING' },
-  { label: 'Entertainment', value: 'ENTERTAINMENT' },
-  { label: 'Services', value: 'SERVICES' },
-  { label: 'General', value: 'GENERAL' },
-];
+/**
+ * Application root.
+ *
+ * The only place that connects live IndexedDB data to the presentational
+ * templates. Views receive plain props and stay pure; every write goes through a
+ * service; the shell owns the responsive chrome. The boot sequence is explicit —
+ * seed on first launch, surface a storage failure as a real message rather than a
+ * blank screen, and never render a view before its data exists.
+ */
 
-export const AppContent: React.FC = () => {
-  const [initialized, setInitialized] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const screens = useBreakpoint();
-  const isMobile = !screens.md;
+/** The signed-in user's net balance in one ledger. */
+function netBalanceFor(
+  userId: UUID,
+  memberIds: UUID[],
+  ledgerExpenses: ExpenseItem[],
+  currency: CurrencyCode
+): number {
+  const balances = calculateNetBalances(memberIds, ledgerExpenses, currency);
+  return balances.get(userId)?.decimalPlaces(2).toNumber() ?? 0;
+}
+
+const AppWorkspace: FC = () => {
+  const { message } = AntdApp.useApp();
+  const ledger = useLedgerData();
+  const filters = useFilterStore();
 
   const {
     currentUserId,
+    preferredCurrency,
+    activeTab,
+    activeGroupId,
+    activeFriendId,
     isExpenseModalOpen,
+    editingExpenseId,
     isSettlementModalOpen,
     preselectedSettlementTarget,
+    isReceiptViewerOpen,
+    viewingReceiptExpenseId,
+    isExportPanelOpen,
+    setActiveTab,
+    setActiveGroup,
+    setActiveFriend,
+    setCurrentUser,
     openExpenseModal,
     closeExpenseModal,
     openSettlementModal,
     closeSettlementModal,
+    openReceiptViewer,
+    closeReceiptViewer,
+    openExportPanel,
+    closeExportPanel,
   } = useAppStore();
 
-  const [form] = Form.useForm();
-  const [submittingExpense, setSubmittingExpense] = useState(false);
-  const [expenseAmount, setExpenseAmount] = useState<number>(0);
-  const [expensePayerId, setExpensePayerId] = useState<UUID>(currentUserId);
-  const [expenseSplitType, setExpenseSplitType] = useState<SplitType>('EQUAL');
+  const [isGroupFormOpen, setGroupFormOpen] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<UUID | null>(null);
 
-  const [settlePayerId, setSettlePayerId] = useState<UUID>(currentUserId);
-  const [settleReceiverId, setSettleReceiverId] = useState<UUID>('');
-  const [settleAmount, setSettleAmount] = useState<number>(0);
-  const [submittingSettle, setSubmittingSettle] = useState(false);
+  const currency = preferredCurrency;
+  const { users, groups, expenses, activities, membersMap, groupsById, isReady, error } = ledger;
+
+  /* -------------------------------------------------------------- routing */
+
+  const route: AppRoute = useMemo(() => {
+    if (activeGroupId) return { name: 'GROUP_DETAIL', groupId: activeGroupId };
+    if (activeFriendId) return { name: 'FRIEND_DETAIL', friendId: activeFriendId };
+    return routeForTab(activeTab);
+  }, [activeGroupId, activeFriendId, activeTab]);
+
+  const guardedRoute = useMemo(
+    () =>
+      guardRoute(route, {
+        groupIds: new Set(groups.map((group) => group.id)),
+        userIds: new Set(users.map((user) => user.id)),
+      }),
+    [route, groups, users]
+  );
+
+  const resolution = resolveRoute(guardedRoute);
 
   useEffect(() => {
-    seedInitialDataIfEmpty().then(() => setInitialized(true));
+    document.title = `MintSplit — ${resolution.title}`;
+  }, [resolution.title]);
+
+  /* A deleted group or person must not leave a dangling detail view. */
+  useEffect(() => {
+    if (!isReady) return;
+    if (activeGroupId && !groupsById.has(activeGroupId)) setActiveGroup(null);
+    if (activeFriendId && !users.some((user) => user.id === activeFriendId)) setActiveFriend(null);
+  }, [isReady, activeGroupId, activeFriendId, groupsById, users, setActiveGroup, setActiveFriend]);
+
+  /* --------------------------------------------------------- derived data */
+
+  const filtersValue = useMemo(
+    () => ({
+      searchText: filters.searchText,
+      categories: filters.categories,
+      splitTypes: filters.splitTypes,
+      memberIds: filters.memberIds,
+      dateRange: filters.dateRange,
+      minAmount: filters.minAmount,
+      maxAmount: filters.maxAmount,
+      includeSettlements: filters.includeSettlements,
+      sortKey: filters.sortKey,
+    }),
+    [
+      filters.searchText,
+      filters.categories,
+      filters.splitTypes,
+      filters.memberIds,
+      filters.dateRange,
+      filters.minAmount,
+      filters.maxAmount,
+      filters.includeSettlements,
+      filters.sortKey,
+    ]
+  );
+
+  const filteredExpenses = useMemo(
+    () => applyLedgerFilters(expenses, filtersValue),
+    [expenses, filtersValue]
+  );
+
+  const groupSummaries = useMemo(
+    () => buildGroupSummaries(groups, expenses, currentUserId, netBalanceFor),
+    [groups, expenses, currentUserId]
+  );
+
+  const allUserIds = useMemo(() => users.map((user) => user.id), [users]);
+
+  const globalTransfers = useMemo(
+    () => calculateSimplifiedDebts(allUserIds, expenses, currency),
+    [allUserIds, expenses, currency]
+  );
+
+  const myNetBalance = useMemo(
+    () => (isReady ? netBalanceFor(currentUserId, allUserIds, expenses, currency) : 0),
+    [isReady, currentUserId, allUserIds, expenses, currency]
+  );
+
+  const pendingTransferCount = useMemo(
+    () =>
+      globalTransfers.filter(
+        (transfer) => transfer.fromUserId === currentUserId || transfer.toUserId === currentUserId
+      ).length,
+    [globalTransfers, currentUserId]
+  );
+
+  const activeGroup = activeGroupId ? groupsById.get(activeGroupId) ?? null : null;
+  const activeFriend = activeFriendId
+    ? users.find((user) => user.id === activeFriendId) ?? null
+    : null;
+  const editingExpense = editingExpenseId
+    ? expenses.find((expense) => expense.id === editingExpenseId) ?? null
+    : null;
+  const viewingReceiptExpense = viewingReceiptExpenseId
+    ? expenses.find((expense) => expense.id === viewingReceiptExpenseId) ?? null
+    : null;
+  const editingGroup = editingGroupId ? groupsById.get(editingGroupId) ?? null : null;
+
+  /* -------------------------------------------------------------- actions */
+
+  const notify = useCallback(
+    (text: string, kind: 'success' | 'error' | 'info' = 'success') => {
+      if (kind === 'error') message.error(text);
+      else if (kind === 'info') message.info(text);
+      else message.success(text);
+    },
+    [message]
+  );
+
+  const handleDeleteExpense = useCallback(
+    async (expenseId: UUID) => {
+      const result = await deleteExpense(expenseId, currentUserId);
+      if (result.ok) notify('Expense deleted. Balances recalculated.');
+      else notify(result.error ?? 'That expense could not be deleted.', 'error');
+    },
+    [currentUserId, notify]
+  );
+
+  const handleOpenExpense = useCallback(
+    (expense: ExpenseItem) => openExpenseModal(expense.id),
+    [openExpenseModal]
+  );
+
+  const handleViewReceipt = useCallback(
+    (expense: ExpenseItem) => openReceiptViewer(expense.id),
+    [openReceiptViewer]
+  );
+
+  const handleSettleTransfer = useCallback(
+    (transfer: DebtTransfer) => {
+      openSettlementModal({
+        fromUserId: transfer.fromUserId,
+        toUserId: transfer.toUserId,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        groupId: activeGroupId,
+      });
+    },
+    [openSettlementModal, activeGroupId]
+  );
+
+  const handleExportJson = useCallback(async () => {
+    try {
+      const summary = await exportDatabaseToJson();
+      notify(`Backup saved as ${summary.filename}`);
+    } catch (exportError) {
+      notify(exportError instanceof Error ? exportError.message : 'The backup could not be created.', 'error');
+    }
+  }, [notify]);
+
+  const handleExportCsv = useCallback(async () => {
+    try {
+      const summary = await exportExpensesToCsv(filteredExpenses);
+      notify(`Exported ${summary.counts.expenses} expenses to ${summary.filename}`);
+    } catch (exportError) {
+      notify(exportError instanceof Error ? exportError.message : 'The export could not be created.', 'error');
+    }
+  }, [filteredExpenses, notify]);
+
+  const handleOpenGroupForm = useCallback((groupId: UUID | null) => {
+    setEditingGroupId(groupId);
+    setGroupFormOpen(true);
   }, []);
 
-  const users = useLiveQuery(() => db.users.toArray(), []) || [];
-  const groups = useLiveQuery(() => db.groups.toArray(), []) || [];
-  const expenses = useLiveQuery(() => db.expenses.orderBy('date').reverse().toArray(), []) || [];
+  /* ---------------------------------------------------------------- rail */
 
-  const membersMap = useMemo(() => {
-    const map = new Map<UUID, UserProfile>();
-    users.forEach((u) => map.set(u.id, u));
-    return map;
-  }, [users]);
+  const rail = useMemo(
+    () => (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.lg }}>
+        <DebtSimplificationCard
+          transfers={globalTransfers}
+          membersMap={membersMap}
+          currentUserId={currentUserId}
+          groupName="every ledger"
+          onSettleTransfer={handleSettleTransfer}
+        />
+        <Card
+          title="Quick actions"
+          style={{ borderRadius: 12, border: `1px solid ${mintPalette.slateBorder}` }}
+          styles={{ body: { padding: spacing.lg } }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.sm }}>
+            <Button
+              block
+              icon={<PlusCircleOutlined />}
+              onClick={() => openExpenseModal()}
+              style={{ minHeight: 40 }}
+            >
+              Add an expense
+            </Button>
+            <Button
+              block
+              icon={<TeamOutlined />}
+              onClick={() => handleOpenGroupForm(null)}
+              style={{ minHeight: 40 }}
+            >
+              New group
+            </Button>
+            <Button block onClick={handleExportJson} style={{ minHeight: 40 }}>
+              Download a backup
+            </Button>
+            <Button block onClick={handleExportCsv} style={{ minHeight: 40 }}>
+              Export this view as CSV
+            </Button>
+            <Button block onClick={openExportPanel} style={{ minHeight: 40 }}>
+              Backup & restore
+            </Button>
+          </div>
+        </Card>
+      </div>
+    ),
+    [
+      globalTransfers,
+      membersMap,
+      currentUserId,
+      handleSettleTransfer,
+      openExpenseModal,
+      handleOpenGroupForm,
+      handleExportJson,
+      handleExportCsv,
+      openExportPanel,
+    ]
+  );
 
-  useEffect(() => {
-    if (users.length > 0 && !settleReceiverId) {
-      const other = users.find((u) => u.id !== currentUserId);
-      if (other) setSettleReceiverId(other.id);
-    }
-  }, [users, currentUserId, settleReceiverId]);
+  /* --------------------------------------------------------------- render */
 
-  useEffect(() => {
-    if (preselectedSettlementTarget) {
-      setSettlePayerId(preselectedSettlementTarget.fromUserId);
-      setSettleReceiverId(preselectedSettlementTarget.toUserId);
-      setSettleAmount(preselectedSettlementTarget.amount);
-    }
-  }, [preselectedSettlementTarget]);
-
-  const { totalOwedToMe, totalIOwe, netBalance } = useMemo(() => {
-    let credit = new BigNumber(0);
-    let debit = new BigNumber(0);
-
-    for (const exp of expenses) {
-      const myPayment = exp.paidBy.find((p) => p.userId === currentUserId)?.amountPaid || 0;
-      const mySplit = exp.splits.find((s) => s.userId === currentUserId)?.owedAmount || 0;
-      const diff = new BigNumber(myPayment).minus(mySplit);
-
-      if (diff.isGreaterThan(0)) {
-        credit = credit.plus(diff);
-      } else if (diff.isLessThan(0)) {
-        debit = debit.plus(diff.abs());
-      }
-    }
-
-    return {
-      totalOwedToMe: credit.toNumber(),
-      totalIOwe: debit.toNumber(),
-      netBalance: credit.minus(debit).toNumber(),
-    };
-  }, [expenses, currentUserId]);
-
-  const allUserIds = useMemo(() => users.map((u) => u.id), [users]);
-  const simplifiedTransfers = useMemo(() => {
-    return calculateSimplifiedDebts(allUserIds, expenses, 'USD');
-  }, [allUserIds, expenses]);
-
-  const filteredExpenses = useMemo(() => {
-    return expenses.filter((e) =>
-      e.description.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [expenses, searchQuery]);
-
-  if (!initialized) {
+  if (!isReady) {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div
+        style={{
+          minHeight: '60vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: spacing.md,
+          backgroundColor: mintPalette.canvas,
+        }}
+      >
         <Spin size="large" />
+        <Typography.Text type="secondary" style={{ fontSize: typography.sizes.small }}>
+          Reading your ledger…
+        </Typography.Text>
       </div>
     );
   }
 
-  const handleDeleteExpense = async (id: string) => {
-    await db.transaction('rw', db.expenses, db.activities, async () => {
-      await db.expenses.delete(id);
-      await db.activities.add({
-        id: `act-${Date.now()}`,
-        actorUserId: currentUserId,
-        action: 'EXPENSE_DELETED',
-        entityId: id,
-        metadata: {},
-        timestamp: new Date().toISOString(),
-      });
-    });
-    message.success('Expense removed');
-  };
+  const renderView = (): React.ReactNode => {
+    switch (guardedRoute.name) {
+      case 'GROUP_DETAIL': {
+        if (!activeGroup) return null;
+        const groupExpenses = expenses.filter((expense) => expense.groupId === activeGroup.id);
+        const members = activeGroup.members
+          .map((member) => membersMap.get(member.userId))
+          .filter((user): user is NonNullable<typeof user> => user !== undefined);
+        const memberIds = members.map((member) => member.id);
 
-  const handleCreateExpense = async () => {
-    try {
-      const values = await form.validateFields();
-      if (expenseAmount <= 0) {
-        message.error('Expense amount must be positive');
-        return;
+        return (
+          <GroupDetailView
+            group={activeGroup}
+            members={members}
+            membersMap={membersMap}
+            currentUserId={currentUserId}
+            expenses={groupExpenses}
+            filters={filtersValue}
+            filteredExpenses={applyLedgerFilters(groupExpenses, filtersValue)}
+            onBack={() => setActiveGroup(null)}
+            onAddExpense={() => openExpenseModal()}
+            onEditGroup={() => handleOpenGroupForm(activeGroup.id)}
+            onAddMember={() => handleOpenGroupForm(activeGroup.id)}
+            onRemoveMember={async (userId) => {
+              const result = await removeGroupMember(activeGroup.id, userId, currentUserId);
+              if (result.ok) notify('Member removed from this group.');
+              else notify(result.error ?? 'That member could not be removed.', 'error');
+            }}
+            onDeleteGroup={async () => {
+              const result = await deleteGroup(activeGroup.id, currentUserId);
+              if (result.ok) {
+                notify('Group deleted.');
+                setActiveGroup(null);
+              } else {
+                notify(result.error ?? 'That group could not be deleted.', 'error');
+              }
+            }}
+            onSelectFriend={setActiveFriend}
+            onEditExpense={handleOpenExpense}
+            onDeleteExpense={handleDeleteExpense}
+            onViewReceipt={handleViewReceipt}
+            onSettleTransfer={handleSettleTransfer}
+            onSettleMember={(userId) => {
+              const transfer = calculateSimplifiedDebts(
+                memberIds,
+                groupExpenses,
+                activeGroup.currency
+              ).find(
+                (entry) =>
+                  (entry.fromUserId === userId && entry.toUserId === currentUserId) ||
+                  (entry.toUserId === userId && entry.fromUserId === currentUserId)
+              );
+
+              openSettlementModal({
+                fromUserId: transfer?.fromUserId ?? currentUserId,
+                toUserId: transfer?.toUserId ?? userId,
+                amount: transfer?.amount ?? 0,
+                currency: activeGroup.currency,
+                groupId: activeGroup.id,
+              });
+            }}
+          />
+        );
       }
 
-      const participantIds = users.map((u) => u.id);
-      const splitResult = computeSplits({
-        totalAmount: expenseAmount,
-        splitType: expenseSplitType,
-        participantIds,
-      });
-
-      if (!splitResult.isValid) {
-        message.error(splitResult.validationError || 'Invalid split allocation');
-        return;
+      case 'FRIEND_DETAIL': {
+        if (!activeFriend) return null;
+        return (
+          <FriendsDetailView
+            currentUserId={currentUserId}
+            friend={activeFriend}
+            users={users}
+            groups={groups}
+            expenses={expenses}
+            membersMap={membersMap}
+            currency={currency}
+            onBack={() => setActiveFriend(null)}
+            onSelectFriend={setActiveFriend}
+            onAddExpense={() =>
+              openExpenseModal()
+            }
+            onSettleUp={() => {
+              const transfer = globalTransfers.find(
+                (entry) =>
+                  (entry.fromUserId === currentUserId && entry.toUserId === activeFriend.id) ||
+                  (entry.toUserId === currentUserId && entry.fromUserId === activeFriend.id)
+              );
+              openSettlementModal({
+                fromUserId: transfer?.fromUserId ?? currentUserId,
+                toUserId: transfer?.toUserId ?? activeFriend.id,
+                amount: transfer?.amount ?? 0,
+                currency,
+              });
+            }}
+            onEditExpense={handleOpenExpense}
+            onDeleteExpense={handleDeleteExpense}
+            onViewReceipt={handleViewReceipt}
+          />
+        );
       }
 
-      setSubmittingExpense(true);
-      const now = new Date().toISOString();
-      const expenseId = `exp-${Date.now()}`;
+      case 'ACTIVITY':
+        return (
+          <ActivityFeedView
+            activities={activities}
+            expenses={expenses}
+            groups={groups}
+            membersMap={membersMap}
+            currentUserId={currentUserId}
+            currency={currency}
+            onSelectExpense={(expenseId) => {
+              const expense = expenses.find((entry) => entry.id === expenseId);
+              if (!expense) return;
+              if (expense.groupId) setActiveGroup(expense.groupId);
+              else setActiveTab('DASHBOARD');
+            }}
+            onSelectGroup={setActiveGroup}
+          />
+        );
 
-      await db.transaction('rw', db.expenses, db.activities, async () => {
-        await db.expenses.add({
-          id: expenseId,
-          groupId: values.groupId === 'NONE' ? null : values.groupId,
-          description: values.description,
-          category: values.category,
-          amount: expenseAmount,
-          currency: 'USD',
-          paidBy: [{ userId: expensePayerId, amountPaid: expenseAmount }],
-          splitType: expenseSplitType,
-          splits: splitResult.splits,
-          date: now,
-          isSettlement: false,
-          createdBy: currentUserId,
-          createdAt: now,
-          updatedAt: now,
-        });
+      case 'FRIENDS':
+        return (
+          <FriendsListView
+            users={users}
+            expenses={expenses}
+            currentUserId={currentUserId}
+            currency={currency}
+            onSelectFriend={setActiveFriend}
+            onSettleUp={(fromUserId, toUserId, amount) =>
+              openSettlementModal({ fromUserId, toUserId, amount, currency })
+            }
+          />
+        );
 
-        await db.activities.add({
-          id: `act-${Date.now()}`,
-          groupId: values.groupId === 'NONE' ? undefined : values.groupId,
-          actorUserId: currentUserId,
-          action: 'EXPENSE_CREATED',
-          entityId: expenseId,
-          metadata: { description: values.description, amount: expenseAmount, currency: 'USD' },
-          timestamp: now,
-        });
-      });
+      case 'GROUPS':
+        return (
+          <GroupsListView
+            groupSummaries={groupSummaries}
+            expenses={expenses}
+            membersMap={membersMap}
+            currentUserId={currentUserId}
+            currency={currency}
+            filters={filtersValue}
+            onSelectGroup={setActiveGroup}
+            onNewGroup={() => handleOpenGroupForm(null)}
+            onAddExpense={() => openExpenseModal()}
+            onEditExpense={handleOpenExpense}
+            onDeleteExpense={handleDeleteExpense}
+            onViewReceipt={handleViewReceipt}
+          />
+        );
 
-      message.success('Expense saved');
-      form.resetFields();
-      setExpenseAmount(0);
-      closeExpenseModal();
-    } catch {
-      // Form validation error caught by AntD
-    } finally {
-      setSubmittingExpense(false);
+      case 'DASHBOARD':
+      default:
+        return (
+          <DashboardView
+            currentUserId={currentUserId}
+            users={users}
+            groups={groups}
+            expenses={expenses}
+            membersMap={membersMap}
+            currency={currency}
+            groupSummaries={groupSummaries}
+            onSelectGroup={setActiveGroup}
+            onSelectFriend={setActiveFriend}
+            onAddExpense={() => openExpenseModal()}
+            onNewGroup={() => handleOpenGroupForm(null)}
+            onSettleUp={(target) => openSettlementModal(target ? { ...target, currency } : undefined)}
+            onSettleTransfer={handleSettleTransfer}
+            onOpenExpense={handleOpenExpense}
+            onViewReceipt={handleViewReceipt}
+            onDeleteExpense={handleDeleteExpense}
+          />
+        );
     }
   };
-
-  const handleRecordSettlement = async () => {
-    if (settlePayerId === settleReceiverId) {
-      message.error('Payer and recipient cannot be the same');
-      return;
-    }
-    if (settleAmount <= 0) {
-      message.error('Please enter a valid payment amount');
-      return;
-    }
-
-    setSubmittingSettle(true);
-    const now = new Date().toISOString();
-    const settlementId = `settle-${Date.now()}`;
-
-    await db.transaction('rw', db.expenses, db.activities, async () => {
-      await db.expenses.add({
-        id: settlementId,
-        groupId: null,
-        description: 'Settlement Payment',
-        category: 'GENERAL',
-        amount: settleAmount,
-        currency: 'USD',
-        paidBy: [{ userId: settlePayerId, amountPaid: settleAmount }],
-        splitType: 'EXACT',
-        splits: [{ userId: settleReceiverId, owedAmount: settleAmount }],
-        date: now,
-        isSettlement: true,
-        createdBy: settlePayerId,
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      await db.activities.add({
-        id: `act-${Date.now()}`,
-        actorUserId: settlePayerId,
-        action: 'SETTLEMENT_RECORDED',
-        entityId: settlementId,
-        metadata: { description: 'Payment recorded', amount: settleAmount, currency: 'USD' },
-        timestamp: now,
-      });
-    });
-
-    confetti({
-      particleCount: 70,
-      spread: 60,
-      origin: { y: 0.6 },
-      colors: ['#00A86B', '#10B981', '#34D399'],
-    });
-
-    message.success('Payment recorded');
-    setSubmittingSettle(false);
-    closeSettlementModal();
-  };
-
-  const expenseFormJSX = (
-    <Form form={form} layout="vertical" initialValues={{ category: 'FOOD_AND_DRINK', groupId: 'NONE' }}>
-      <Form.Item name="description" label="Description" rules={[{ required: true, message: 'Required' }]}>
-        <Input placeholder="e.g. Dinner, Groceries, Flight" size="large" />
-      </Form.Item>
-
-      <Row gutter={12}>
-        <Col span={12}>
-          <Form.Item label="Amount ($)" required>
-            <InputNumber
-              min={0.01}
-              step={0.5}
-              value={expenseAmount}
-              onChange={(v) => setExpenseAmount(v ?? 0)}
-              style={{ width: '100%' }}
-              size="large"
-              placeholder="0.00"
-            />
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item name="category" label="Category">
-            <Select options={CATEGORIES} size="large" />
-          </Form.Item>
-        </Col>
-      </Row>
-
-      <Form.Item name="groupId" label="Assign to Group">
-        <Select
-          options={[
-            { label: 'None (Direct split with all)', value: 'NONE' },
-            ...groups.map((g) => ({ label: g.name, value: g.id })),
-          ]}
-        />
-      </Form.Item>
-
-      <Form.Item label="Paid by">
-        <Select
-          value={expensePayerId}
-          onChange={(v) => setExpensePayerId(v)}
-          options={users.map((u) => ({ label: u.name, value: u.id }))}
-        />
-      </Form.Item>
-
-      <Form.Item label="Split Method">
-        <Radio.Group
-          value={expenseSplitType}
-          onChange={(e) => setExpenseSplitType(e.target.value)}
-          buttonStyle="solid"
-        >
-          <Radio.Button value="EQUAL">Equally</Radio.Button>
-        </Radio.Group>
-      </Form.Item>
-    </Form>
-  );
 
   return (
-    <Layout style={{ minHeight: '100vh', backgroundColor: '#F8FAFC' }}>
-      <Header
-        style={{
-          position: 'sticky',
-          top: 0,
-          zIndex: 100,
-          backgroundColor: '#FFFFFF',
-          borderBottom: '1px solid #E2E8F0',
-          padding: isMobile ? '0 12px' : '0 24px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          height: 60,
+    <>
+      <ResponsiveAppShell
+        users={users}
+        groups={groups}
+        currentUserId={currentUserId}
+        activeTab={resolution.tab}
+        onTabChange={(tab) => {
+          setActiveGroup(null);
+          setActiveFriend(null);
+          setActiveTab(tab);
         }}
+        onSwitchUser={(userId) => {
+          setCurrentUser(userId);
+          notify('Switched person — every balance is now shown from their side.', 'info');
+        }}
+        onAddExpense={() => openExpenseModal()}
+        onSettleUp={() => openSettlementModal()}
+        onOpenBackup={openExportPanel}
+        onNewGroup={() => handleOpenGroupForm(null)}
+        netBalance={myNetBalance}
+        currency={currency}
+        pendingTransferCount={pendingTransferCount}
+        rail={rail}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              backgroundColor: '#00A86B',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#FFFFFF',
-              fontWeight: 800,
-              fontSize: 18,
-            }}
-          >
-            S
-          </div>
-          <Typography.Title level={4} style={{ margin: 0, fontWeight: 700 }}>
-            Mint<span style={{ color: '#00A86B' }}>Split</span>
-          </Typography.Title>
-        </div>
+        {renderView()}
+      </ResponsiveAppShell>
 
-        <Space size="small">
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => openExpenseModal()}
-            style={{ backgroundColor: '#00A86B', fontWeight: 600, minHeight: 38 }}
-          >
-            {!isMobile && 'Add Expense'}
-          </Button>
-          <Button
-            icon={<DollarCircleOutlined />}
-            onClick={() => openSettlementModal()}
-            style={{ minHeight: 38 }}
-          >
-            {!isMobile && 'Settle'}
-          </Button>
-        </Space>
-      </Header>
-
-      <Content style={{ padding: isMobile ? '16px 12px 76px 12px' : '24px', maxWidth: 1100, margin: '0 auto', width: '100%' }}>
-        <Row gutter={[16, 16]}>
-          <Col xs={24} sm={8}>
-            <Card style={{ borderRadius: 12, border: '1px solid #E2E8F0' }}>
-              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                Net Balance
-              </Typography.Text>
-              <Typography.Title
-                level={2}
-                style={{
-                  margin: '4px 0 0 0',
-                  color: netBalance > 0.005 ? '#059669' : netBalance < -0.005 ? '#E11D48' : '#0F172A',
-                }}
-              >
-                {netBalance > 0 ? '+' : ''}{formatMoney(netBalance, 'USD')}
-              </Typography.Title>
-            </Card>
-          </Col>
-          <Col xs={12} sm={8}>
-            <Card style={{ borderRadius: 12, border: '1px solid #E2E8F0' }}>
-              <Statistic
-                title="You are owed"
-                value={totalOwedToMe}
-                precision={2}
-                prefix={<ArrowUpOutlined style={{ fontSize: 16 }} />}
-                valueStyle={{ color: '#059669', fontWeight: 700 }}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} sm={8}>
-            <Card style={{ borderRadius: 12, border: '1px solid #E2E8F0' }}>
-              <Statistic
-                title="You owe"
-                value={totalIOwe}
-                precision={2}
-                prefix={<ArrowDownOutlined style={{ fontSize: 16 }} />}
-                valueStyle={{ color: '#E11D48', fontWeight: 700 }}
-              />
-            </Card>
-          </Col>
-        </Row>
-
-        <Row gutter={[20, 20]} style={{ marginTop: 20 }}>
-          <Col xs={24} lg={15}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <Typography.Title level={4} style={{ margin: 0 }}>
-                Expenses
-              </Typography.Title>
-              <Input
-                placeholder="Search..."
-                prefix={<SearchOutlined style={{ color: '#94A3B8' }} />}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                style={{ width: 160, borderRadius: 8 }}
-                allowClear
-              />
-            </div>
-
-            {filteredExpenses.length === 0 ? (
-              <Card style={{ textAlign: 'center', padding: '32px 0', borderRadius: 12 }}>
-                <Typography.Text type="secondary">No recorded expenses.</Typography.Text>
-              </Card>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {filteredExpenses.map((expense) => {
-                  const payer = membersMap.get(expense.paidBy[0]?.userId);
-                  const isSettlement = expense.isSettlement;
-
-                  return (
-                    <Card
-                      key={expense.id}
-                      styles={{ body: { padding: '12px 16px' } }}
-                      style={{
-                        borderRadius: 10,
-                        border: '1px solid #EDF2F7',
-                        backgroundColor: isSettlement ? '#F0FDF4' : '#FFFFFF',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                        <div>
-                          <Typography.Text strong style={{ fontSize: 15 }}>
-                            {expense.description}
-                          </Typography.Text>
-                          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-                            {new Date(expense.date).toLocaleDateString()} • Paid by {payer?.name || 'Someone'}
-                          </Typography.Text>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <Typography.Text strong style={{ fontSize: 16 }}>
-                            {formatMoney(expense.amount, expense.currency)}
-                          </Typography.Text>
-                          <Popconfirm
-                            title="Delete this entry?"
-                            onConfirm={() => handleDeleteExpense(expense.id)}
-                            okText="Delete"
-                            cancelText="Cancel"
-                            okButtonProps={{ danger: true }}
-                          >
-                            <Button
-                              type="text"
-                              danger
-                              icon={<DeleteOutlined />}
-                              aria-label="Delete Entry"
-                              style={{ width: 44, height: 44, minHeight: 44 }}
-                            />
-                          </Popconfirm>
-                        </div>
-                      </div>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </Col>
-
-          <Col xs={24} lg={9}>
-            <Card
-              title={
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <ThunderboltFilled style={{ color: '#00A86B' }} />
-                  <span>Simplified Settlements</span>
-                </div>
-              }
-              style={{ borderRadius: 12, border: '1px solid #E2E8F0' }}
-            >
-              {simplifiedTransfers.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '24px 8px' }}>
-                  <CheckCircleFilled style={{ fontSize: 32, color: '#00A86B', marginBottom: 8 }} />
-                  <Typography.Text strong style={{ display: 'block', color: '#065F46' }}>
-                    All settled up!
-                  </Typography.Text>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {simplifiedTransfers.map((t, idx) => {
-                    const fromUser = membersMap.get(t.fromUserId);
-                    const toUser = membersMap.get(t.toUserId);
-                    const involvesMe = t.fromUserId === currentUserId || t.toUserId === currentUserId;
-
-                    return (
-                      <div
-                        key={`${t.fromUserId}-${t.toUserId}-${idx}`}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '10px 12px',
-                          borderRadius: 8,
-                          backgroundColor: involvesMe ? '#F0FDF7' : '#F8FAFC',
-                          border: '1px solid',
-                          borderColor: involvesMe ? '#A7F3D0' : '#E2E8F0',
-                          gap: 8,
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                          <Typography.Text strong ellipsis style={{ fontSize: 13, maxWidth: 70 }}>
-                            {t.fromUserId === currentUserId ? 'You' : fromUser?.name.split(' ')[0]}
-                          </Typography.Text>
-                          <ArrowRightOutlined style={{ color: '#94A3B8', fontSize: 12 }} />
-                          <Typography.Text strong ellipsis style={{ fontSize: 13, maxWidth: 70 }}>
-                            {t.toUserId === currentUserId ? 'You' : toUser?.name.split(' ')[0]}
-                          </Typography.Text>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <Typography.Text strong style={{ fontSize: 13 }}>
-                            {formatMoney(t.amount, t.currency)}
-                          </Typography.Text>
-                          {involvesMe && (
-                            <Button
-                              type="primary"
-                              size="small"
-                              style={{ backgroundColor: '#00A86B', minHeight: 30 }}
-                              onClick={() =>
-                                openSettlementModal({
-                                  fromUserId: t.fromUserId,
-                                  toUserId: t.toUserId,
-                                  amount: t.amount,
-                                })
-                              }
-                            >
-                              Settle
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </Card>
-          </Col>
-        </Row>
-      </Content>
-
-      {/* Add Expense Modal / Mobile Drawer */}
-      {isMobile ? (
-        <Drawer
-          title="Add an Expense"
-          placement="bottom"
+      <Suspense fallback={null}>
+        <ExpenseFormModal
           open={isExpenseModalOpen}
           onClose={closeExpenseModal}
-          height="88vh"
-          extra={
-            <Button
-              type="primary"
-              onClick={handleCreateExpense}
-              loading={submittingExpense}
-              disabled={submittingExpense}
-              style={{ backgroundColor: '#00A86B', minHeight: 38 }}
-            >
-              Save
-            </Button>
+          currentUserId={currentUserId}
+          defaultGroupId={activeGroupId}
+          users={users}
+          groups={groups}
+          expense={editingExpense}
+          defaultParticipantIds={
+            activeFriendId && !activeGroupId ? [currentUserId, activeFriendId] : undefined
           }
-        >
-          {expenseFormJSX}
-        </Drawer>
-      ) : (
-        <Modal
-          title="Add an Expense"
-          open={isExpenseModalOpen}
-          onCancel={closeExpenseModal}
-          onOk={handleCreateExpense}
-          confirmLoading={submittingExpense}
-          okText="Save Expense"
-          okButtonProps={{ style: { backgroundColor: '#00A86B' } }}
-        >
-          {expenseFormJSX}
-        </Modal>
-      )}
+          onSaved={() => notify('Expense saved. Balances updated.')}
+        />
 
-      {/* Settle Up Modal */}
-      <Modal
-        title="Record a Payment"
-        open={isSettlementModalOpen}
-        onCancel={closeSettlementModal}
-        onOk={handleRecordSettlement}
-        confirmLoading={submittingSettle}
-        okText="Record Settlement"
-        okButtonProps={{ style: { backgroundColor: '#00A86B' } }}
+        <SettlementWizard
+          open={isSettlementModalOpen}
+          onClose={closeSettlementModal}
+          users={users}
+          expenses={expenses}
+          currency={preselectedSettlementTarget?.currency ?? currency}
+          currentUserId={currentUserId}
+          defaultPayerId={preselectedSettlementTarget?.fromUserId}
+          defaultReceiverId={preselectedSettlementTarget?.toUserId}
+          defaultAmount={preselectedSettlementTarget?.amount}
+          groupId={preselectedSettlementTarget?.groupId ?? activeGroupId}
+          onRecorded={() => notify('Payment recorded. Balances updated.')}
+        />
+
+        <ReceiptViewerModal
+          open={isReceiptViewerOpen}
+          onClose={closeReceiptViewer}
+          expense={viewingReceiptExpense}
+          membersMap={membersMap}
+          currentUserId={currentUserId}
+          onReceiptRemoved={() => notify('Receipt removed from this expense.')}
+        />
+
+        <BackupRestoreModal
+          open={isExportPanelOpen}
+          onClose={closeExportPanel}
+          onDataChanged={() => notify('Local ledger updated.', 'info')}
+        />
+
+        <GroupFormModal
+          open={isGroupFormOpen}
+          onClose={() => {
+            setGroupFormOpen(false);
+            setEditingGroupId(null);
+          }}
+          currentUserId={currentUserId}
+          users={users}
+          group={editingGroup}
+          onSaved={(groupId) => {
+            setActiveGroup(groupId);
+            setActiveTab('GROUPS');
+          }}
+        />
+      </Suspense>
+
+      {error ? (
+        <Result
+          status="warning"
+          title="Local storage is unavailable"
+          subTitle={error}
+          extra={
+            <Typography.Text type="secondary">
+              MintSplit keeps your ledger in this browser. Check that storage is not blocked or full,
+              then reload.
+            </Typography.Text>
+          }
+        />
+      ) : null}
+    </>
+  );
+};
+
+/** Boot wrapper: proves the database is usable before rendering the workspace. */
+const AppBootstrap: FC = () => {
+  const [bootState, setBootState] = useState<'LOADING' | 'READY' | 'FAILED'>('LOADING');
+  const [bootError, setBootError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    ensureSeeded()
+      .then(() => {
+        if (!cancelled) setBootState('READY');
+      })
+      .catch((seedError: unknown) => {
+        if (cancelled) return;
+        setBootState('FAILED');
+        setBootError(
+          seedError instanceof Error
+            ? `${seedError.message} Private browsing can block local storage.`
+            : 'The local database could not be opened. Private browsing can block local storage.'
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (bootState === 'LOADING') {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: spacing.md,
+          backgroundColor: mintPalette.canvas,
+        }}
       >
-        <Space orientation="vertical" style={{ width: '100%', marginTop: 12 }}>
-          <div>
-            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-              Who is paying?
-            </Typography.Text>
-            <Select
-              value={settlePayerId}
-              onChange={(v) => setSettlePayerId(v)}
-              style={{ width: '100%' }}
-              options={users.map((u) => ({ label: u.name, value: u.id }))}
-            />
-          </div>
+        <Spin size="large" />
+        <Typography.Text type="secondary">Preparing your ledger…</Typography.Text>
+      </div>
+    );
+  }
 
-          <div>
-            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-              Who is receiving?
-            </Typography.Text>
-            <Select
-              value={settleReceiverId}
-              onChange={(v) => setSettleReceiverId(v)}
-              style={{ width: '100%' }}
-              options={users.map((u) => ({ label: u.name, value: u.id }))}
-            />
-          </div>
+  if (bootState === 'FAILED') {
+    return (
+      <Result
+        status="warning"
+        title="Local storage is unavailable"
+        subTitle={bootError}
+        extra={
+          <Typography.Text type="secondary">
+            MintSplit stores your ledger in this browser. Check that storage is not blocked or full,
+            then reload.
+          </Typography.Text>
+        }
+      />
+    );
+  }
 
-          <div>
-            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-              Amount ($)
-            </Typography.Text>
-            <InputNumber
-              value={settleAmount}
-              onChange={(v) => setSettleAmount(v ?? 0)}
-              prefix="$"
-              min={0.01}
-              step={1}
-              style={{ width: '100%' }}
-              size="large"
-            />
-          </div>
-        </Space>
-      </Modal>
-    </Layout>
-  );
+  return <AppWorkspace />;
 };
 
-export const App: React.FC = () => {
-  return (
-    <ConfigProvider theme={cleanFinanceMintTheme}>
-      <AntdApp>
-        <AppContent />
-      </AntdApp>
-    </ConfigProvider>
-  );
-};
+export const App: FC = () => (
+  <ConfigProvider theme={cleanFinanceMintTheme}>
+    <AntdApp>
+      <AppBootstrap />
+    </AntdApp>
+  </ConfigProvider>
+);
 
 export default App;

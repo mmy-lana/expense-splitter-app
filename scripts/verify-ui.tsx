@@ -56,7 +56,26 @@ import {
   GroupLedgerTable,
   LedgerTotalsBar,
 } from '../src/components/organisms';
-import type { DebtTransfer, ExpenseItem, UserProfile, UserProfileMap } from '../src/types';
+import {
+  ActivityFeedView,
+  DashboardView,
+  FriendsDetailView,
+  FriendsListView,
+  GroupDetailView,
+  GroupsListView,
+  ResponsiveAppShell,
+  SHELL_TABS,
+} from '../src/components/templates';
+import { guardRoute, resolveRoute, routeForTab, selectVisibleGroups } from '../src/app/routes';
+import { DEFAULT_LEDGER_FILTERS } from '../src/stores/useFilterStore';
+import type {
+  ActivityLog,
+  DebtTransfer,
+  ExpenseItem,
+  Group,
+  UserProfile,
+  UserProfileMap,
+} from '../src/types';
 import {
   assert,
   assertAbsent,
@@ -1204,6 +1223,571 @@ test('BalanceCallout states direction in words and colour', () => {
   );
   assertContains(owing, BALANCE_TONES.debit.surface, 'a debt uses the rose surface');
   assertDiffers(owed, owing, 'the two directions render differently');
+});
+
+/* ----------------------------------------------------- Phase 5 templates */
+
+const TPL_MEMBERS: UserProfile[] = [
+  {
+    id: 'user-a',
+    name: 'Alex Rivera',
+    email: 'alex@mintsplit.app',
+    avatarUrl: '',
+    defaultCurrency: 'USD',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'user-b',
+    name: 'Sarah Chen',
+    email: 'sarah@mintsplit.app',
+    avatarUrl: '',
+    defaultCurrency: 'USD',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'user-c',
+    name: 'Marcus Vance',
+    email: 'marcus@mintsplit.app',
+    avatarUrl: '',
+    defaultCurrency: 'USD',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+const TPL_MEMBER_MAP: UserProfileMap = new Map(TPL_MEMBERS.map((user) => [user.id, user]));
+
+const TPL_GROUP: Group = {
+  id: 'group-kyoto',
+  name: 'Kyoto Autumn Retreat',
+  category: 'TRIP',
+  description: 'Ryokan nights and rail passes.',
+  currency: 'USD',
+  avatarIcon: 'CompassOutlined',
+  simplifyDebts: true,
+  members: TPL_MEMBERS.map((user) => ({
+    userId: user.id,
+    joinedAt: '2026-01-01T00:00:00.000Z',
+    role: user.id === 'user-a' ? ('ADMIN' as const) : ('MEMBER' as const),
+  })),
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+/** a pays 90 for a+b; b pays 60 for a+b. Net: a is owed 15. */
+const TPL_EXPENSES: ExpenseItem[] = [
+  {
+    id: 'tpl-1',
+    groupId: 'group-kyoto',
+    description: 'Kaiseki Dinner',
+    category: 'FOOD_AND_DRINK',
+    amount: 90,
+    currency: 'USD',
+    paidBy: [{ userId: 'user-a', amountPaid: 90 }],
+    splitType: 'EQUAL',
+    splits: [
+      { userId: 'user-a', owedAmount: 45 },
+      { userId: 'user-b', owedAmount: 45 },
+    ],
+    date: '2026-09-10T12:00:00.000Z',
+    isSettlement: false,
+    createdBy: 'user-a',
+    createdAt: '2026-09-10T12:00:00.000Z',
+    updatedAt: '2026-09-10T12:00:00.000Z',
+  },
+  {
+    id: 'tpl-2',
+    groupId: 'group-kyoto',
+    description: 'Rail Passes',
+    category: 'TRANSPORTATION',
+    amount: 60,
+    currency: 'USD',
+    paidBy: [{ userId: 'user-b', amountPaid: 60 }],
+    splitType: 'EQUAL',
+    splits: [
+      { userId: 'user-a', owedAmount: 30 },
+      { userId: 'user-b', owedAmount: 30 },
+    ],
+    date: '2026-09-12T12:00:00.000Z',
+    isSettlement: false,
+    createdBy: 'user-b',
+    createdAt: '2026-09-12T12:00:00.000Z',
+    updatedAt: '2026-09-12T12:00:00.000Z',
+  },
+];
+
+const TPL_ACTIVITIES: ActivityLog[] = [
+  {
+    id: 'act-1',
+    groupId: 'group-kyoto',
+    actorUserId: 'user-a',
+    action: 'EXPENSE_CREATED',
+    entityId: 'tpl-1',
+    metadata: { description: 'Kaiseki Dinner', amount: 90, currency: 'USD' },
+    timestamp: '2026-09-10T12:00:00.000Z',
+  },
+  {
+    id: 'act-2',
+    groupId: 'group-kyoto',
+    actorUserId: 'user-b',
+    action: 'SETTLEMENT_RECORDED',
+    entityId: 'tpl-2',
+    metadata: { description: 'Rail Passes', amount: 60, currency: 'USD' },
+    timestamp: '2026-09-12T12:00:00.000Z',
+  },
+];
+
+const TPL_FILTERS = { ...DEFAULT_LEDGER_FILTERS };
+
+const noop = (): void => undefined;
+
+const GROUP_SUMMARIES = [
+  {
+    group: TPL_GROUP,
+    memberCount: 3,
+    expenseCount: 2,
+    totalSpend: 150,
+    myNetBalance: 15,
+    lastActivityAt: '2026-09-12T12:00:00.000Z',
+  },
+];
+
+section('ResponsiveAppShell \u2014 cross-viewport chrome');
+
+test('renders the brand, navigation and primary actions', () => {
+  const markup = render(
+    createElement(ResponsiveAppShell, {
+        users: TPL_MEMBERS,
+        groups: [TPL_GROUP],
+        currentUserId: 'user-a',
+        activeTab: 'DASHBOARD',
+        onTabChange: noop,
+        onSwitchUser: noop,
+        onAddExpense: noop,
+        onSettleUp: noop,
+        onOpenBackup: noop,
+        onNewGroup: noop,
+        netBalance: 15,
+        currency: 'USD',
+        pendingTransferCount: 1,
+        children: createElement('div', null, 'VIEW_CONTENT'),
+      })
+  );
+
+  // The brand is `Mint<span>Split</span>`, so the words are separate text nodes.
+  assertContains(markup, '>Mint<', 'the brand prefix is rendered');
+  assertContains(markup, '>Split</span>', 'the brand suffix is rendered in the accent colour');
+  assertContains(markup, 'VIEW_CONTENT', 'children are rendered inside the shell');
+  assertContains(markup, 'aria-label="Add an expense"', 'the add action is labelled');
+  assertContains(markup, 'aria-label="Record a payment"', 'the settle action is labelled');
+  assertContains(markup, 'aria-label="Switch who you are"', 'the identity switcher is labelled');
+});
+
+test('exposes the four validated navigation destinations', () => {
+  for (const tab of SHELL_TABS) {
+    assert(
+      ['DASHBOARD', 'GROUPS', 'FRIENDS', 'ACTIVITY'].includes(tab.key),
+      `${tab.key} is one of the four destinations`
+    );
+    assert(tab.label.length > 0, `${tab.key} has a label`);
+  }
+  assertEqual(SHELL_TABS.length, 4, 'exactly four destinations');
+});
+
+test('the bottom navigation is marked so desktop CSS can hide it', () => {
+  // Server rendering has no viewport, so `useResponsive` reports the mobile
+  // layout; the nav must therefore carry the class the stylesheet keys on.
+  const markup = render(
+    createElement(ResponsiveAppShell, {
+        users: TPL_MEMBERS,
+        groups: [TPL_GROUP],
+        currentUserId: 'user-a',
+        activeTab: 'GROUPS',
+        onTabChange: noop,
+        onSwitchUser: noop,
+        onAddExpense: noop,
+        onSettleUp: noop,
+        onOpenBackup: noop,
+        onNewGroup: noop,
+        children: null,
+      })
+  );
+  assertContains(markup, 'mobile-bottom-nav', 'the nav is classed for the responsive stylesheet');
+  assertContains(markup, 'aria-label="Primary navigation"', 'the nav is a labelled landmark');
+  assertContains(markup, 'aria-current="page"', 'the active destination is announced');
+});
+
+section('DashboardView \u2014 aggregate position and ledgers');
+
+test('states the net position, both directions and the ledgers', () => {
+  const markup = render(
+    createElement(DashboardView, {
+      currentUserId: 'user-a',
+      users: TPL_MEMBERS,
+      groups: [TPL_GROUP],
+      expenses: TPL_EXPENSES,
+      membersMap: TPL_MEMBER_MAP,
+      currency: 'USD',
+      groupSummaries: GROUP_SUMMARIES,
+      onSelectGroup: noop,
+      onSelectFriend: noop,
+      onAddExpense: noop,
+      onNewGroup: noop,
+      onSettleUp: noop,
+      onSettleTransfer: noop,
+      onOpenExpense: noop,
+      onViewReceipt: noop,
+      onDeleteExpense: noop,
+    })
+  );
+
+  assertContains(markup, 'Net balance', 'the net tile is present');
+  assertContains(markup, 'Owed to you', 'the credit side is labelled');
+  assertContains(markup, 'You owe', 'the debit side is labelled');
+  assertContains(markup, 'Kyoto Autumn Retreat', 'the ledger is listed');
+  assertContains(markup, 'People you split with', 'the friends section is present');
+  assertContains(markup, 'Recent activity', 'recent expenses are listed');
+  assertContains(markup, 'Simplified settlements', 'the settlement plan is shown');
+  assertContains(markup, '$15.00', 'the net position is stated (90 vs 45+30 share split)');
+});
+
+test('offers a first action when the ledger is empty', () => {
+  const markup = render(
+    createElement(DashboardView, {
+      currentUserId: 'user-a',
+      users: TPL_MEMBERS,
+      groups: [],
+      expenses: [],
+      membersMap: TPL_MEMBER_MAP,
+      groupSummaries: [],
+      onSelectGroup: noop,
+      onSelectFriend: noop,
+      onAddExpense: noop,
+      onNewGroup: noop,
+      onSettleUp: noop,
+      onSettleTransfer: noop,
+      onOpenExpense: noop,
+      onViewReceipt: noop,
+      onDeleteExpense: noop,
+    })
+  );
+  assertContains(markup, 'No expenses yet', 'the empty state is honest');
+  assertContains(markup, 'Add your first expense', 'a first action is offered');
+});
+
+test('renders a skeleton instead of a wrong number while loading', () => {
+  const markup = render(
+    createElement(DashboardView, {
+      currentUserId: 'user-a',
+      users: TPL_MEMBERS,
+      groups: [],
+      expenses: [],
+      membersMap: TPL_MEMBER_MAP,
+      groupSummaries: [],
+      loading: true,
+      onSelectGroup: noop,
+      onSelectFriend: noop,
+      onAddExpense: noop,
+      onNewGroup: noop,
+      onSettleUp: noop,
+      onSettleTransfer: noop,
+      onOpenExpense: noop,
+      onViewReceipt: noop,
+      onDeleteExpense: noop,
+    })
+  );
+  assertContains(markup, 'ant-skeleton', 'a skeleton is rendered');
+  assertAbsent(markup, 'Net balance', 'no figures are shown before the data arrives');
+});
+
+section('GroupDetailView \u2014 ledger, balances and analytics');
+
+test('renders the header facts and all three tabs', () => {
+  const markup = render(
+    createElement(GroupDetailView, {
+      group: TPL_GROUP,
+      members: TPL_MEMBERS,
+      membersMap: TPL_MEMBER_MAP,
+      currentUserId: 'user-a',
+      expenses: TPL_EXPENSES,
+      filters: TPL_FILTERS,
+      filteredExpenses: TPL_EXPENSES,
+      onBack: noop,
+      onAddExpense: noop,
+      onEditGroup: noop,
+      onAddMember: noop,
+      onRemoveMember: noop,
+      onDeleteGroup: noop,
+      onSelectFriend: noop,
+      onEditExpense: noop,
+      onDeleteExpense: noop,
+      onViewReceipt: noop,
+      onSettleTransfer: noop,
+      onSettleMember: noop,
+    })
+  );
+
+  assertContains(markup, 'Kyoto Autumn Retreat', 'the group name is the heading');
+  assertContains(markup, 'Ryokan nights and rail passes.', 'the description is shown');
+  assertContains(markup, 'Total spend', 'total spend is reported');
+  assertContains(markup, '$150.00', 'the total is correct (90 + 60)');
+  assertContains(markup, 'Your position', 'the member position is shown');
+  assertContains(markup, 'Ledger (2)', 'the ledger tab counts its rows');
+  assertContains(markup, 'Balances', 'the balances tab exists');
+  assertContains(markup, 'Analytics', 'the analytics tab exists');
+  assertContains(markup, 'simplified', 'the simplification setting is surfaced');
+});
+
+test('handles a group with no expenses without breaking', () => {
+  const markup = render(
+    createElement(GroupDetailView, {
+      group: TPL_GROUP,
+      members: TPL_MEMBERS,
+      membersMap: TPL_MEMBER_MAP,
+      currentUserId: 'user-a',
+      expenses: [],
+      filters: TPL_FILTERS,
+      filteredExpenses: [],
+      onBack: noop,
+      onAddExpense: noop,
+      onEditGroup: noop,
+      onAddMember: noop,
+      onRemoveMember: noop,
+      onDeleteGroup: noop,
+      onSelectFriend: noop,
+      onEditExpense: noop,
+      onDeleteExpense: noop,
+      onViewReceipt: noop,
+      onSettleTransfer: noop,
+      onSettleMember: noop,
+    })
+  );
+  assertContains(markup, 'Kyoto Autumn Retreat', 'the header still renders');
+  assertContains(markup, 'Ledger (0)', 'the empty ledger tab is counted correctly');
+  assertContains(
+    markup,
+    'has no expenses yet',
+    'the ledger empty state names the group'
+  );
+});
+
+section('FriendsDetailView \u2014 pairwise ledger');
+
+test('states the pairwise position and the shared ledger', () => {
+  const markup = render(
+    createElement(FriendsDetailView, {
+      currentUserId: 'user-a',
+      friend: TPL_MEMBERS[1],
+      users: TPL_MEMBERS,
+      groups: [TPL_GROUP],
+      expenses: TPL_EXPENSES,
+      membersMap: TPL_MEMBER_MAP,
+      currency: 'USD',
+      onBack: noop,
+      onSelectFriend: noop,
+      onAddExpense: noop,
+      onSettleUp: noop,
+      onEditExpense: noop,
+      onDeleteExpense: noop,
+      onViewReceipt: noop,
+    })
+  );
+
+  assertContains(markup, 'Sarah Chen', 'the friend is named');
+  assertContains(markup, 'Shared ledger (2)', 'every shared expense is listed');
+  assertContains(markup, 'Between you two', 'the pairwise panel is present');
+  assertContains(markup, 'owes you', 'the direction is stated in words');
+  assertContains(markup, '$15.00', 'the pairwise net is stated (b owes a 45, a owes b 30)');
+  assertContains(markup, 'in your favour', 'the direction is restated');
+});
+
+test('offers a first expense when nothing is shared', () => {
+  const markup = render(
+    createElement(FriendsDetailView, {
+      currentUserId: 'user-a',
+      friend: TPL_MEMBERS[1],
+      users: TPL_MEMBERS,
+      groups: [],
+      expenses: [],
+      membersMap: TPL_MEMBER_MAP,
+      currency: 'USD',
+      onBack: noop,
+      onSelectFriend: noop,
+      onAddExpense: noop,
+      onSettleUp: noop,
+      onEditExpense: noop,
+      onDeleteExpense: noop,
+      onViewReceipt: noop,
+    })
+  );
+  assertContains(markup, 'have not split anything yet', 'the empty state is specific');
+  assertContains(markup, 'Add the first expense', 'a way forward is offered');
+});
+
+section('ActivityFeedView \u2014 audit trail');
+
+test('groups entries by day and links them to their expense', () => {
+  const markup = render(
+    createElement(ActivityFeedView, {
+      activities: TPL_ACTIVITIES,
+      expenses: TPL_EXPENSES,
+      groups: [TPL_GROUP],
+      membersMap: TPL_MEMBER_MAP,
+      currentUserId: 'user-a',
+      currency: 'USD',
+      onSelectExpense: noop,
+      onSelectGroup: noop,
+    })
+  );
+
+  assertContains(markup, 'Activity', 'the view is titled');
+  assertContains(markup, 'Kaiseki Dinner', 'the recorded description is shown');
+  assertContains(markup, 'You', 'the signed-in actor is named in the first person');
+  assertContains(markup, 'Kyoto Autumn Retreat', 'the ledger is labelled on the entry');
+  assertContains(markup, 'Open expense', 'actionable entries link to their expense');
+  assertContains(markup, '2 entries', 'the entry count is stated');
+});
+
+test('explains an empty audit trail', () => {
+  const markup = render(
+    createElement(ActivityFeedView, {
+      activities: [],
+      expenses: [],
+      groups: [],
+      membersMap: TPL_MEMBER_MAP,
+      currentUserId: 'user-a',
+    })
+  );
+  assertContains(markup, 'No activity recorded yet', 'the empty state explains how entries appear');
+});
+
+section('List views \u2014 groups and people');
+
+test('GroupsListView summarises each ledger and lists group expenses', () => {
+  const markup = render(
+    createElement(GroupsListView, {
+      groupSummaries: GROUP_SUMMARIES,
+      expenses: TPL_EXPENSES,
+      membersMap: TPL_MEMBER_MAP,
+      currentUserId: 'user-a',
+      currency: 'USD',
+      filters: TPL_FILTERS,
+      onSelectGroup: noop,
+      onNewGroup: noop,
+      onAddExpense: noop,
+      onEditExpense: noop,
+      onDeleteExpense: noop,
+      onViewReceipt: noop,
+    })
+  );
+
+  assertContains(markup, 'Groups', 'the view is titled');
+  assertContains(markup, '1 ledger you belong to', 'the ledger count is stated');
+  assertContains(markup, 'Kyoto Autumn Retreat', 'the group is listed');
+  assertContains(markup, '3 members', 'the member count is shown');
+  assertContains(markup, 'Your position', 'the personal position is shown');
+  assertContains(markup, '$150.00 spent', 'the ledger spend is shown');
+  assertContains(markup, 'Every group expense', 'the cross-group feed is present');
+});
+
+test('FriendsListView orders people by how much is at stake', () => {
+  const markup = render(
+    createElement(FriendsListView, {
+      users: TPL_MEMBERS,
+      expenses: TPL_EXPENSES,
+      currentUserId: 'user-a',
+      currency: 'USD',
+      onSelectFriend: noop,
+      onSettleUp: noop,
+    })
+  );
+
+  assertContains(markup, 'People', 'the view is titled');
+  assertContains(markup, 'Net balance with everyone', 'the aggregate is stated');
+  assertContains(markup, 'Sarah Chen', 'a counterparty with a live balance is listed');
+  assertContains(markup, '$15.00', 'the outstanding amount is shown');
+  assertContains(markup, 'owes you', 'the direction is stated');
+  assertContains(markup, '1 person shares a ledger with you', 'the count agrees with the list');
+  // A saved contact with no shared expense and no balance is not a ledger entry.
+  assertAbsent(markup, 'Marcus Vance', 'people with nothing at stake are omitted');
+});
+
+test('FriendsListView hides people with no dealings and no balance', () => {
+  const markup = render(
+    createElement(FriendsListView, {
+      users: TPL_MEMBERS,
+      expenses: [],
+      currentUserId: 'user-a',
+      currency: 'USD',
+      onSelectFriend: noop,
+      onSettleUp: noop,
+    })
+  );
+  assertContains(markup, 'not split anything together yet', 'the empty state explains why');
+});
+
+/* ------------------------------------------------------ responsive routing */
+
+section('Routing \u2014 view resolution and guards');
+
+test('each tab resolves to its own route and title', () => {
+  assertEqual(resolveRoute({ name: 'DASHBOARD' }).tab, 'DASHBOARD', 'dashboard tab');
+  assertEqual(resolveRoute({ name: 'GROUPS' }).tab, 'GROUPS', 'groups tab');
+  assertEqual(resolveRoute({ name: 'FRIENDS' }).tab, 'FRIENDS', 'friends tab');
+  assertEqual(resolveRoute({ name: 'ACTIVITY' }).tab, 'ACTIVITY', 'activity tab');
+  assertEqual(
+    resolveRoute({ name: 'GROUP_DETAIL', groupId: 'g' }).tab,
+    'GROUPS',
+    'a group detail keeps the groups tab active'
+  );
+  assertEqual(
+    resolveRoute({ name: 'FRIEND_DETAIL', friendId: 'u' }).tab,
+    'FRIENDS',
+    'a friend detail keeps the friends tab active'
+  );
+  assertContains(resolveRoute({ name: 'GROUP_DETAIL', groupId: 'g' }).title, 'Group', 'group title');
+});
+
+test('a drilled-into entity that no longer exists falls back to its list', () => {
+  const context = { groupIds: new Set(['group-live']), userIds: new Set(['user-live']) };
+
+  assertEqual(
+    guardRoute({ name: 'GROUP_DETAIL', groupId: 'group-deleted' }, context).name,
+    'GROUPS',
+    'a deleted group falls back'
+  );
+  assertEqual(
+    guardRoute({ name: 'FRIEND_DETAIL', friendId: 'user-deleted' }, context).name,
+    'FRIENDS',
+    'a deleted person falls back'
+  );
+  assertEqual(
+    guardRoute({ name: 'GROUP_DETAIL', groupId: 'group-live' }, context).name,
+    'GROUP_DETAIL',
+    'a live group is left alone'
+  );
+  assertEqual(guardRoute({ name: 'DASHBOARD' }, context).name, 'DASHBOARD', 'plain routes pass through');
+});
+
+test('only the groups a person belongs to are listed for them', () => {
+  const other: Group = {
+    ...TPL_GROUP,
+    id: 'group-other',
+    name: 'Someone else\x27s trip',
+    members: [{ userId: 'user-zzz', joinedAt: '2026-01-01T00:00:00.000Z', role: 'ADMIN' }],
+  };
+  const visible = selectVisibleGroups([TPL_GROUP, other], 'user-a');
+  assertEqual(visible.length, 1, 'only the membership group is visible');
+  assertEqual(visible[0].id, 'group-kyoto', 'the right group is returned');
+});
+
+test('every tab the shell renders resolves to a route', () => {
+  for (const tab of SHELL_TABS) {
+    const route = routeForTab(tab.key);
+    assertEqual(resolveRoute(route).tab, tab.key, `${tab.key} round-trips through its route`);
+  }
 });
 
 /* ---------------------------------------------------------------- reporting */

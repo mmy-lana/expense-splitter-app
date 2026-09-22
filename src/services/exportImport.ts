@@ -197,8 +197,24 @@ export async function importExpensesFromCsv(
 /** Dispatches on file extension so the UI can offer one "Import backup" control. */
 export async function importFromFile(file: File, options: ImportOptions = {}): Promise<ImportReport> {
   const contents = await readFileAsText(file);
-  const isCsv = file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv';
-  return isCsv ? importExpensesFromCsv(contents, options) : importSnapshotFromJson(contents, options);
+  return importFromText(contents, file.name, options);
+}
+
+/**
+ * Imports backup contents that were already read, dispatching on the filename.
+ *
+ * Separate from `importFromFile` so a caller holding the text (e.g. a drop target
+ * that already decoded the payload) does not have to wrap it back into a File.
+ */
+export async function importFromText(
+  contents: string,
+  filename: string,
+  options: ImportOptions = {}
+): Promise<ImportReport> {
+  const isCsv = filename.toLowerCase().endsWith('.csv');
+  return isCsv
+    ? importExpensesFromCsv(contents, options)
+    : importSnapshotFromJson(contents, options);
 }
 
 /** Human-readable summary of an import, for the confirmation toast. */

@@ -324,3 +324,43 @@ export async function attachReceipt(
 
   return { ok: true, expenseId };
 }
+
+/**
+ * Removes a receipt image from an expense.
+ *
+ * This is an update, never a delete: the money is real whether or not the paper
+ * survives, and a receipt payload is often the largest row in the database.
+ */
+export async function removeReceipt(
+  expenseId: UUID,
+  actorUserId: UUID
+): Promise<LedgerMutationResult> {
+  const existing = await db.expenses.get(expenseId);
+  if (!existing) return { ok: false, error: 'That expense no longer exists.' };
+  if (!existing.receiptDataUrl) {
+    return { ok: true, expenseId };
+  }
+
+  const now = new Date().toISOString();
+  const { receiptDataUrl: _discarded, ...withoutReceipt } = existing;
+
+  await db.transaction('rw', db.expenses, db.activities, async () => {
+    await db.expenses.put({ ...withoutReceipt, updatedAt: now });
+    await db.activities.add(
+      buildActivity({
+        action: 'EXPENSE_UPDATED',
+        actorUserId,
+        entityId: expenseId,
+        groupId: existing.groupId,
+        metadata: {
+          description: `Receipt removed from ${existing.description}`,
+          amount: existing.amount,
+          currency: existing.currency,
+        },
+        timestamp: now,
+      })
+    );
+  });
+
+  return { ok: true, expenseId };
+}

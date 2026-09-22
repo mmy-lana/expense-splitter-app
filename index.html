@@ -2,15 +2,54 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Expense Splitter App</title>
+    <!--
+      `viewport-fit=cover` lets the fixed bottom navigation honour the iOS home
+      indicator via env(safe-area-inset-bottom); zoom is left enabled so users who
+      need to magnify a receipt image can still pinch.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#00A86B" />
+    <meta
+      name="description"
+      content="MintSplit — split expenses with friends and groups, track who owes whom, and settle up with the fewest possible payments. Works fully offline; your ledger stays on your device."
+    />
+    <title>MintSplit — Split expenses, settle up</title>
+
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+
+    <!--
+      Inter is fetched for the ideal typography. The app is offline-first, so the
+      font stack in `src/theme` lists system fallbacks and nothing depends on this
+      request succeeding.
+    -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      Shown until React mounts, then replaced. This keeps the first paint from
+      being a blank white rectangle on a slow device, and it matches the boot
+      spinner the app renders while IndexedDB opens.
+    -->
+    <noscript>
+      <div style="font-family: system-ui, sans-serif; padding: 32px; max-width: 640px; margin: 0 auto">
+        <h1 style="font-size: 20px">MintSplit needs JavaScript</h1>
+        <p style="color: #64748b">
+          This app keeps your expense ledger in your browser and calculates balances
+          on the fly, so it cannot run without JavaScript enabled.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
