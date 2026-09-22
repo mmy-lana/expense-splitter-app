@@ -112,9 +112,18 @@ export const UserAvatar: FC<UserAvatarProps> = ({
     setImageFailed(false);
   }, [avatarUrl]);
 
+  const isSafeUrl = useMemo(() => {
+    if (!avatarUrl || avatarUrl.trim().length === 0) return false;
+    const trimmed = avatarUrl.trim();
+    return (
+      /^https?:\/\/[^\s$.?#].[^\s]*$/i.test(trimmed) ||
+      /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
+    );
+  }, [avatarUrl]);
+
   const displayName = name.trim().length > 0 ? name.trim() : 'Unknown';
   const backgroundColor = useMemo(() => hashStringToColor(displayName), [displayName]);
-  const showImage = Boolean(avatarUrl && avatarUrl.trim().length > 0) && !imageFailed;
+  const showImage = isSafeUrl && !imageFailed;
 
   const initials = getInitials(displayName);
   const tone = status ? BALANCE_TONES[status] : undefined;

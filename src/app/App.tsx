@@ -296,7 +296,8 @@ const AppWorkspace: FC = () => {
               block
               icon={<PlusCircleOutlined />}
               onClick={() => openExpenseModal()}
-              style={{ minHeight: 40 }}
+              className="mint-touch-target"
+              style={{ minHeight: 44 }}
             >
               Add an expense
             </Button>
@@ -304,17 +305,33 @@ const AppWorkspace: FC = () => {
               block
               icon={<TeamOutlined />}
               onClick={() => handleOpenGroupForm(null)}
-              style={{ minHeight: 40 }}
+              className="mint-touch-target"
+              style={{ minHeight: 44 }}
             >
               New group
             </Button>
-            <Button block onClick={handleExportJson} style={{ minHeight: 40 }}>
+            <Button
+              block
+              onClick={handleExportJson}
+              className="mint-touch-target"
+              style={{ minHeight: 44 }}
+            >
               Download a backup
             </Button>
-            <Button block onClick={handleExportCsv} style={{ minHeight: 40 }}>
+            <Button
+              block
+              onClick={handleExportCsv}
+              className="mint-touch-target"
+              style={{ minHeight: 44 }}
+            >
               Export this view as CSV
             </Button>
-            <Button block onClick={openExportPanel} style={{ minHeight: 40 }}>
+            <Button
+              block
+              onClick={openExportPanel}
+              className="mint-touch-target"
+              style={{ minHeight: 44 }}
+            >
               Backup & restore
             </Button>
           </div>
@@ -692,10 +709,19 @@ const AppBootstrap: FC = () => {
         title="Local storage is unavailable"
         subTitle={bootError}
         extra={
-          <Typography.Text type="secondary">
-            MintSplit stores your ledger in this browser. Check that storage is not blocked or full,
-            then reload.
-          </Typography.Text>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: spacing.md }}>
+            <Typography.Text type="secondary">
+              MintSplit stores your ledger in this browser. Check that storage is not blocked or full,
+              then reload.
+            </Typography.Text>
+            <Button
+              type="primary"
+              onClick={() => window.location.reload()}
+              style={{ backgroundColor: mintPalette.primary }}
+            >
+              Retry
+            </Button>
+          </div>
         }
       />
     );

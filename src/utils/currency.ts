@@ -72,7 +72,8 @@ export function roundToCurrency(amount: number, currency: CurrencyCode = BASE_CU
 
 /** Major units -> integer minor units (pennies). */
 export function toMinorUnits(amount: number, currency: CurrencyCode = BASE_CURRENCY): number {
-  return new BigNumber(amount)
+  const safe = Number.isFinite(amount) ? amount : 0;
+  return new BigNumber(safe)
     .times(getMinorUnitFactor(currency))
     .integerValue(BigNumber.ROUND_HALF_UP)
     .toNumber();
@@ -80,7 +81,8 @@ export function toMinorUnits(amount: number, currency: CurrencyCode = BASE_CURRE
 
 /** Integer minor units (pennies) -> major units. */
 export function fromMinorUnits(minorUnits: number, currency: CurrencyCode = BASE_CURRENCY): number {
-  return new BigNumber(minorUnits).dividedBy(getMinorUnitFactor(currency)).toNumber();
+  const safe = Number.isFinite(minorUnits) ? minorUnits : 0;
+  return new BigNumber(safe).dividedBy(getMinorUnitFactor(currency)).toNumber();
 }
 
 export function isEffectivelyZero(amount: number, epsilon: number = ZERO_EPSILON): boolean {

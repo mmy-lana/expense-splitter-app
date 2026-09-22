@@ -67,7 +67,7 @@ export const ReceiptViewerModal: FC<ReceiptViewerModalProps> = ({
   };
 
   const handleDownload = (): void => {
-    if (!dataUrl || !expense) return;
+    if (!dataUrl || !expense || !dataUrl.startsWith('data:image/')) return;
     const anchor = document.createElement('a');
     anchor.href = dataUrl;
     anchor.download = `receipt-${expense.id}.jpg`;
