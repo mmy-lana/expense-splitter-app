@@ -6,7 +6,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
-    "verify": "node --import ./scripts/ts-register.mjs scripts/verify-engine.ts",
+    "verify:engine": "node --import ./scripts/ts-register.mjs scripts/verify-engine.ts",
+    "verify:ui": "vite build --ssr scripts/verify-ui.tsx --outDir .verify-ui --logLevel error && node .verify-ui/verify-ui.js",
+    "verify": "pnpm run verify:engine && pnpm run verify:ui",
     "preview": "vite preview"
   },
   "dependencies": {

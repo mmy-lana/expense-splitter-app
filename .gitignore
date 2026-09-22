@@ -11,3 +11,4 @@ repomix-output.xml
 .pnpm-store
 .vite
 coverage
+.verify-ui

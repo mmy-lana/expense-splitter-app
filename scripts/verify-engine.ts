@@ -40,34 +40,7 @@ import type {
 
 /* ------------------------------------------------------------------ harness */
 
-let passed = 0;
-const failures: string[] = [];
-
-function section(title: string): void {
-  console.log(`\n${title}`);
-}
-
-function test(name: string, fn: () => void): void {
-  try {
-    fn();
-    passed += 1;
-    console.log(`  \u2713 ${name}`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    failures.push(`${name} -> ${message}`);
-    console.error(`  \u2717 ${name}\n      ${message}`);
-  }
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
-
-function assertEqual<T>(actual: T, expected: T, message: string): void {
-  if (actual !== expected) {
-    throw new Error(`${message} (expected ${String(expected)}, received ${String(actual)})`);
-  }
-}
+import { assert, assertEqual, exitWithReport, section, test } from './harness';
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -854,13 +827,4 @@ test('seed group ids stay stable for the persistence layer', () => {
 
 /* ---------------------------------------------------------------- reporting */
 
-section('Summary');
-console.log(`  ${passed} checks passed, ${failures.length} failed`);
-
-if (failures.length > 0) {
-  console.error('\nFailures:');
-  for (const failure of failures) console.error(`  - ${failure}`);
-  process.exitCode = 1;
-} else {
-  console.log('\nAll engine verification checks passed.');
-}
+exitWithReport();
