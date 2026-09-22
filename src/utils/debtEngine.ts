@@ -226,9 +226,47 @@ export function calculateSimplifiedDebts(
   return transfers;
 }
 
+/** How a single expense moves one person's position in the ledger. */
+export interface ExpenseImpact {
+  userId: UUID;
+  /** What this user actually fronted on this expense. */
+  paid: number;
+  /** This user's share of the expense. */
+  owed: number;
+  /** `paid - owed`: positive means the expense left them owed money. */
+  net: number;
+  /** They put money in (possibly as one of several payers). */
+  isPayer: boolean;
+  /** They carry a share of the cost. */
+  isParticipant: boolean;
+  /** They appear on the row at all. */
+  isInvolved: boolean;
+}
+
+/**
+ * Per-expense impact for one user, in exact decimal arithmetic.
+ *
+ * Used by the ledger rows and the friend view, where a single expense has to
+ * explain itself ("you lent $60.00") without the row having to re-derive the
+ * arithmetic on raw floats.
+ */
+export function calculateExpenseImpact(expense: ExpenseItem, userId: UUID): ExpenseImpact {
+  const paid = new BigNumber(paidByUser(expense, userId));
+  const owed = new BigNumber(owedByUser(expense, userId));
+
+  return {
+    userId,
+    paid: paid.toNumber(),
+    owed: owed.toNumber(),
+    net: paid.minus(owed).decimalPlaces(2, BigNumber.ROUND_HALF_UP).toNumber(),
+    isPayer: paid.isGreaterThan(0),
+    isParticipant: owed.isGreaterThan(0),
+    isInvolved: isInvolved(expense, userId),
+  };
+}
+
 /** Paid/owed/net breakdown for one user, split into "owed to me" and "I owe". */
-export function computePersonalTotals(
-  userId: UUID,
+export function computePersonalTotals(  userId: UUID,
   expenses: ExpenseItem[],
   currency: CurrencyCode = BASE_CURRENCY
 ): PersonalTotals {

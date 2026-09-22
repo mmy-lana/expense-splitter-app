@@ -17,6 +17,7 @@ import {
 } from '../src/utils/splitEngine';
 import {
   calculateCategoryTotals,
+  calculateExpenseImpact,
   calculateMemberBalances,
   calculateNetBalances,
   calculatePairwiseBalance,
@@ -627,6 +628,80 @@ test('debt engine ignores currency mismatches and handles empty ledgers', () => 
   assertEqual(calculateTotalSpend([], 'USD'), 0, 'empty spend');
   assertEqual(calculateCategoryTotals([], 'USD').length, 0, 'empty categories');
   assertEqual(calculateMemberBalances(['a'], [], 'USD')[0].netBalance, 0, 'empty balances');
+});
+
+test('per-expense impact explains a ledger row without float drift', () => {
+  const expense = makeExpense({
+    id: 'e1',
+    amount: 100,
+    paidBy: [{ userId: 'a', amountPaid: 100 }],
+    splitType: 'EQUAL',
+    participantIds: ['a', 'b', 'c'],
+  });
+
+  const payerImpact = calculateExpenseImpact(expense, 'a');
+  assertEqual(payerImpact.paid, 100, 'a fronted the whole bill');
+  assertEqual(payerImpact.owed, 33.34, 'a carries the residual penny');
+  assertEqual(payerImpact.net, 66.66, 'a is owed the rest');
+  assert(payerImpact.isPayer, 'a is a payer');
+  assert(payerImpact.isParticipant, 'a is a participant');
+  assert(payerImpact.isInvolved, 'a is involved');
+
+  const participantImpact = calculateExpenseImpact(expense, 'b');
+  assertEqual(participantImpact.paid, 0, 'b paid nothing');
+  assertEqual(participantImpact.net, -33.33, 'b owes their share');
+  assert(!participantImpact.isPayer, 'b is not a payer');
+  assert(participantImpact.isParticipant, 'b is a participant');
+
+  const outsider = calculateExpenseImpact(expense, 'zzz');
+  assertEqual(outsider.net, 0, 'an outsider has no impact');
+  assert(!outsider.isInvolved, 'an outsider is not involved');
+});
+
+test('per-expense impact splits correctly across multiple payers', () => {
+  const expense = makeExpense({
+    id: 'e2',
+    amount: 64,
+    paidBy: [
+      { userId: 'a', amountPaid: 32 },
+      { userId: 'b', amountPaid: 32 },
+    ],
+    splitType: 'EQUAL',
+    participantIds: ['a', 'b', 'c'],
+  });
+
+  // $64 / 3 = $21.333..., so the residual penny lands on the leading participant:
+  // a owes 21.34, b and c owe 21.33. Both payers fronted 32.
+  assertEqual(expense.splits[0].owedAmount, 21.34, 'the leading participant absorbs the penny');
+  assertEqual(calculateExpenseImpact(expense, 'a').net, 10.66, 'a nets their share back');
+  assertEqual(calculateExpenseImpact(expense, 'b').net, 10.67, 'b nets their share back');
+  assertEqual(calculateExpenseImpact(expense, 'c').net, -21.33, 'c owes their share');
+  assertEqual(
+    calculateExpenseImpact(expense, 'a').net + calculateExpenseImpact(expense, 'b').net,
+    21.33,
+    'the two payers recover exactly what the non-payer owes'
+  );
+});
+
+test('per-expense impact reports a settlement as a pure transfer', () => {
+  const settlement = makeExpense({
+    id: 's1',
+    amount: 50,
+    paidBy: [{ userId: 'b', amountPaid: 50 }],
+    splitType: 'EXACT',
+    participantIds: ['a'],
+    customValues: { a: 50 },
+    isSettlement: true,
+  });
+
+  const payerImpact = calculateExpenseImpact(settlement, 'b');
+  assertEqual(payerImpact.paid, 50, 'the payer fronted the transfer');
+  assertEqual(payerImpact.owed, 0, 'the payer carries no share');
+  assertEqual(payerImpact.net, 50, 'the transfer credits the payer');
+
+  const receiverImpact = calculateExpenseImpact(settlement, 'a');
+  assertEqual(receiverImpact.paid, 0, 'the receiver fronted nothing');
+  assertEqual(receiverImpact.net, -50, 'the transfer debits the receiver');
 });
 
 /* -------------------------------------------------------- seed dataset suite */

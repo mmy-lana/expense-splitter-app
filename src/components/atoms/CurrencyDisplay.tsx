@@ -8,7 +8,9 @@ import {
   resolveBalanceTone,
   typography,
 } from '../../theme';
-import { formatMoneyCompact, getCurrencyDecimals, getCurrencySymbol } from '../../utils/currency';
+import { renderMoney } from '../../utils/currency';
+
+export { renderMoney };
 
 /**
  * The canonical money renderer.
@@ -55,20 +57,6 @@ const SIZE_STYLES: Record<CurrencyDisplaySize, { fontSize: number; fontWeight: n
 };
 
 /** Formats a signed amount at an explicit precision, with an explicit sign. */
-export function renderMoney(
-  amount: number,
-  currency: CurrencyCode,
-  options: { precision?: number; showSign?: boolean; compact?: boolean } = {}
-): string {
-  const safe = Number.isFinite(amount) ? amount : 0;
-  if (options.compact) return formatMoneyCompact(safe, currency);
-
-  const digits = options.precision ?? getCurrencyDecimals(currency);
-  const symbol = getCurrencySymbol(currency);
-  const magnitude = Math.abs(safe).toFixed(digits);
-  const sign = safe < 0 ? '-' : options.showSign && safe > 0 ? '+' : '';
-  return `${sign}${symbol}${magnitude}`;
-}
 
 export const CurrencyDisplay: FC<CurrencyDisplayProps> = ({
   amount,

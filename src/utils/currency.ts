@@ -154,6 +154,37 @@ export function parseMonetaryInput(val: string | number): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export interface RenderMoneyOptions {
+  /** Overrides the currency's own minor-unit precision. */
+  precision?: number;
+  /** Renders an explicit `+` on positive values. */
+  showSign?: boolean;
+  /** Abbreviates large values (`$1.2K`, `$3.4M`). */
+  compact?: boolean;
+}
+
+/**
+ * The single formatting contract for money in the UI.
+ *
+ * Handles the three cases the plain formatter cannot: a caller-supplied
+ * precision, an explicit `+` sign, and compact notation. Non-finite input
+ * degrades to a zero amount so `NaN` can never reach the DOM.
+ */
+export function renderMoney(
+  amount: number,
+  currency: CurrencyCode = BASE_CURRENCY,
+  options: RenderMoneyOptions = {}
+): string {
+  const safe = Number.isFinite(amount) ? amount : 0;
+  if (options.compact) return formatMoneyCompact(safe, currency);
+
+  const digits = options.precision ?? getCurrencyDecimals(currency);
+  const symbol = getCurrencySymbol(currency);
+  const magnitude = Math.abs(safe).toFixed(digits);
+  const sign = safe < 0 ? '-' : options.showSign && safe > 0 ? '+' : '';
+  return `${sign}${symbol}${magnitude}`;
+}
+
 /** Converts between currencies using the bundled static rate table. */
 export function convertCurrency(
   amount: number,
