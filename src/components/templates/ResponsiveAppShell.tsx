@@ -278,24 +278,31 @@ export const ResponsiveAppShell: FC<ResponsiveAppShellProps> = ({
               icon={<PlusOutlined />}
               onClick={onAddExpense}
               aria-label="Add an expense"
-              style={{ backgroundColor: mintPalette.primary, minHeight: 40, minWidth: isMobile ? 44 : undefined }}
+              style={{
+                backgroundColor: mintPalette.primary,
+                minHeight: 40,
+                minWidth: isMobile ? 40 : undefined,
+                paddingInline: isMobile ? 8 : 16,
+              }}
             >
               {!isMobile ? 'Add expense' : null}
             </Button>
           </Tooltip>
 
-          <Tooltip title="Record a payment">
-            <Badge count={pendingTransferCount} size="small" offset={[-2, 2]}>
-              <Button
-                icon={<DollarCircleOutlined />}
-                onClick={onSettleUp}
-                aria-label="Record a payment"
-                style={{ minHeight: 40, minWidth: 44 }}
-              >
-                {!isMobile ? 'Settle up' : null}
-              </Button>
-            </Badge>
-          </Tooltip>
+          {!isMobile && (
+            <Tooltip title="Record a payment">
+              <Badge count={pendingTransferCount} size="small" offset={[-2, 2]}>
+                <Button
+                  icon={<DollarCircleOutlined />}
+                  onClick={onSettleUp}
+                  aria-label="Record a payment"
+                  style={{ minHeight: 40, minWidth: 44 }}
+                >
+                  Settle up
+                </Button>
+              </Badge>
+            </Tooltip>
+          )}
 
           {isDesktopWide ? (
             <Tooltip title="Backup and restore">
@@ -479,6 +486,14 @@ export const ResponsiveAppShell: FC<ResponsiveAppShellProps> = ({
               gap: spacing.sm,
             }}
           >
+            <Button
+              block
+              size="large"
+              icon={<DollarCircleOutlined />}
+              onClick={() => { setMobileMenuOpen(false); onSettleUp(); }}
+            >
+              Record a payment
+            </Button>
             <Button block size="large" onClick={() => { setMobileMenuOpen(false); onOpenBackup(); }}>
               Backup & restore
             </Button>

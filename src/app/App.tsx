@@ -16,7 +16,6 @@ import { FriendsListView } from '../components/templates/FriendsListView';
 import { GroupDetailView } from '../components/templates/GroupDetailView';
 import { GroupsListView } from '../components/templates/GroupsListView';
 import { ResponsiveAppShell } from '../components/templates/ResponsiveAppShell';
-import { DebtSimplificationCard } from '../components/organisms/DebtSimplificationCard';
 import { Card } from 'antd';
 import { PlusCircleOutlined, TeamOutlined } from '@ant-design/icons';
 import { guardRoute, resolveRoute, routeForTab } from './routes';
@@ -287,13 +286,6 @@ const AppWorkspace: FC = () => {
   const rail = useMemo(
     () => (
       <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.lg }}>
-        <DebtSimplificationCard
-          transfers={globalTransfers}
-          membersMap={membersMap}
-          currentUserId={currentUserId}
-          groupName="every ledger"
-          onSettleTransfer={handleSettleTransfer}
-        />
         <Card
           title="Quick actions"
           style={{ borderRadius: 12, border: `1px solid ${mintPalette.slateBorder}` }}

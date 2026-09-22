@@ -4,7 +4,7 @@ export type { ResponsiveAppShellProps, ShellTabDefinition } from './ResponsiveAp
 export { DashboardView } from './DashboardView';
 export type { DashboardViewProps, FriendBalance } from './DashboardView';
 
-export { GroupDetailView, filterGroupExpenses } from './GroupDetailView';
+export { GroupDetailView, filterGroupExpenses, pairUpBalances } from './GroupDetailView';
 export type { GroupDetailViewProps, GroupDetailTab } from './GroupDetailView';
 
 export { FriendsDetailView } from './FriendsDetailView';

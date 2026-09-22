@@ -27,7 +27,7 @@ import {
 } from '../../utils/debtEngine';
 import { applyLedgerFilters } from '../../stores/useFilterStore';
 import type { LedgerFilters } from '../../stores/useFilterStore';
-import { renderMoney } from '../../utils/currency';
+import { renderMoney, ZERO_EPSILON } from '../../utils/currency';
 
 /**
  * Group detail.
@@ -68,6 +68,8 @@ export interface GroupDetailViewProps {
   onViewReceipt: (expense: ExpenseItem) => void;
   onSettleTransfer: (transfer: DebtTransfer) => void;
   onSettleMember: (userId: UUID) => void;
+  /** Seeds the open tab; defaults to the ledger. */
+  initialTab?: GroupDetailTab;
   className?: string;
   style?: CSSProperties;
 }
@@ -94,10 +96,11 @@ export const GroupDetailView: FC<GroupDetailViewProps> = ({
   onViewReceipt,
   onSettleTransfer,
   onSettleMember,
+  initialTab = 'LEDGER',
   className,
   style,
 }) => {
-  const [tab, setTab] = useState<GroupDetailTab>('LEDGER');
+  const [tab, setTab] = useState<GroupDetailTab>(initialTab);
 
   const memberIds = useMemo(() => members.map((member) => member.id), [members]);
 
@@ -118,8 +121,7 @@ export const GroupDetailView: FC<GroupDetailViewProps> = ({
       transfers ??
       (group.simplifyDebts
         ? calculateSimplifiedDebts(memberIds, expenses, group.currency)
-        : // Without simplification, every creditor/debtor pair is a real obligation.
-          pairUpBalances(netBalances, group.currency)),
+        : pairUpBalances(netBalances, group.currency)),
     [transfers, group.simplifyDebts, memberIds, expenses, group.currency, netBalances]
   );
 
@@ -155,7 +157,11 @@ export const GroupDetailView: FC<GroupDetailViewProps> = ({
         currentUserId={currentUserId}
         groupName={group.name}
         onSettleTransfer={onSettleTransfer}
-        rawDebtCount={group.simplifyDebts ? memberIds.length * (memberIds.length - 1) : undefined}
+        rawDebtCount={
+          group.simplifyDebts
+            ? Math.floor((memberIds.length * (memberIds.length - 1)) / 2)
+            : undefined
+        }
       />
 
       <Card
@@ -357,9 +363,9 @@ export const GroupDetailView: FC<GroupDetailViewProps> = ({
                 >
                   <Button
                     type="text"
-                    size="small"
                     aria-label={`Remove ${member.name} from this group`}
-                    style={{ minWidth: 24, minHeight: 24, padding: 0 }}
+                    className="mint-touch-target"
+                    style={{ minWidth: 44, minHeight: 44, padding: 0 }}
                   >
                     ×
                   </Button>
@@ -502,32 +508,57 @@ const HeaderMetric: FC<{ label: string; value: string }> = ({ label, value }) =>
 );
 
 /**
- * Pairs creditors with debtors directly, used when a group opts out of
- * simplification: every real obligation is shown as recorded, with no netting.
+ * Pairs creditors with debtors directly without net multi-hop simplification,
+ * decrementing balances to guarantee total debt does not exceed net liabilities.
+ *
+ * Exported because the allocation is the only arithmetic in this view: the
+ * verification harness asserts conservation against it directly.
  */
-function pairUpBalances(
+export function pairUpBalances(
   netBalances: Map<UUID, BigNumber>,
   currency: Group['currency']
 ): DebtTransfer[] {
-  const creditors: { userId: UUID; amount: number }[] = [];
-  const debtors: { userId: UUID; amount: number }[] = [];
+  interface MutableNode {
+    userId: UUID;
+    balance: BigNumber;
+  }
+
+  const creditors: MutableNode[] = [];
+  const debtors: MutableNode[] = [];
+  const ZERO = new BigNumber(ZERO_EPSILON);
 
   netBalances.forEach((balance, userId) => {
-    const amount = balance.decimalPlaces(2, BigNumber.ROUND_HALF_UP).toNumber();
-    if (amount > 0.005) creditors.push({ userId, amount });
-    else if (amount < -0.005) debtors.push({ userId, amount: Math.abs(amount) });
+    if (balance.isGreaterThan(ZERO)) {
+      creditors.push({ userId, balance: balance.decimalPlaces(2, BigNumber.ROUND_HALF_UP) });
+    } else if (balance.isLessThan(ZERO.negated())) {
+      debtors.push({ userId, balance: balance.abs().decimalPlaces(2, BigNumber.ROUND_HALF_UP) });
+    }
   });
 
   const debts: DebtTransfer[] = [];
-  for (const creditor of creditors) {
-    for (const debtor of debtors) {
+  let cIdx = 0;
+  let dIdx = 0;
+
+  while (cIdx < creditors.length && dIdx < debtors.length) {
+    const creditor = creditors[cIdx];
+    const debtor = debtors[dIdx];
+    const settleAmount = BigNumber.minimum(creditor.balance, debtor.balance);
+    const amount = settleAmount.decimalPlaces(2, BigNumber.ROUND_HALF_UP).toNumber();
+
+    if (amount > 0) {
       debts.push({
         fromUserId: debtor.userId,
         toUserId: creditor.userId,
-        amount: Math.min(creditor.amount, debtor.amount),
+        amount,
         currency,
       });
     }
+
+    creditor.balance = creditor.balance.minus(settleAmount);
+    debtor.balance = debtor.balance.minus(settleAmount);
+
+    if (creditor.balance.isLessThanOrEqualTo(ZERO)) cIdx++;
+    if (debtor.balance.isLessThanOrEqualTo(ZERO)) dIdx++;
   }
 
   return debts;

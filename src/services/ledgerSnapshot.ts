@@ -167,6 +167,18 @@ function parseSplits(value: unknown): ExpenseSplitParticipant[] {
     .filter((split) => split.userId.length > 0 && split.owedAmount >= 0);
 }
 
+const SAFE_IMAGE_DATA_URL = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const SAFE_HTTP_URL = /^https?:\/\/[^\s$.?#].[^\s]*$/i;
+
+function sanitizeUrl(url: unknown): string {
+  if (typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (SAFE_HTTP_URL.test(trimmed) || SAFE_IMAGE_DATA_URL.test(trimmed)) {
+    return trimmed;
+  }
+  return '';
+}
+
 function parseUsers(value: unknown): UserProfile[] {
   if (!Array.isArray(value)) return [];
   return value.filter(isRecord).flatMap((entry) => {
@@ -177,7 +189,7 @@ function parseUsers(value: unknown): UserProfile[] {
         id: entry.id,
         name: entry.name,
         email: isNonEmptyString(entry.email) ? entry.email : '',
-        avatarUrl: typeof entry.avatarUrl === 'string' ? entry.avatarUrl : '',
+        avatarUrl: sanitizeUrl(entry.avatarUrl),
         defaultCurrency: asCurrency(entry.defaultCurrency),
         createdAt: timestamp,
         updatedAt: isIsoDate(entry.updatedAt) ? entry.updatedAt : timestamp,
@@ -247,7 +259,7 @@ function parseExpenses(value: unknown): ExpenseItem[] {
         date: timestamp,
         notes: typeof entry.notes === 'string' && entry.notes.length > 0 ? entry.notes : undefined,
         receiptDataUrl:
-          typeof entry.receiptDataUrl === 'string' && entry.receiptDataUrl.length > 0
+          typeof entry.receiptDataUrl === 'string' && SAFE_IMAGE_DATA_URL.test(entry.receiptDataUrl)
             ? entry.receiptDataUrl
             : undefined,
         isSettlement: entry.isSettlement === true,
@@ -430,12 +442,17 @@ export const CSV_COLUMNS = [
 const PAIR_SEPARATOR = '|';
 const PAIR_DELIMITER = ':';
 
-/** RFC 4180 quoting: wrap when the value contains a comma, quote or newline. */
+/** RFC 4180 quoting with CSV formula injection mitigation. */
 export function escapeCsvValue(value: string): string {
-  if (/[",\n\r]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
+  let sanitized = value;
+  // Neutralize formula injection triggers for spreadsheet applications
+  if (/^[=+\-@\t\r]/.test(sanitized)) {
+    sanitized = `'${sanitized}`;
   }
-  return value;
+  if (/[",\n\r]/.test(sanitized)) {
+    return `"${sanitized.replace(/"/g, '""')}"`;
+  }
+  return sanitized;
 }
 
 function encodePairs(entries: { userId: string; amount: number }[]): string {

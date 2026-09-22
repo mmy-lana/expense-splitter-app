@@ -110,15 +110,15 @@ export const ExpenseRowItem: FC<ExpenseRowItemProps> = ({
   }
 
   const secondaryLine = (
-    <>
+    <span style={{ whiteSpace: 'nowrap' }}>
       {dayjs(expense.date).format('MMM D, YYYY')}
       {' \u00b7 '}
       {expense.paidBy.length > 1 ? (
         <>Paid by {expense.paidBy.length} people</>
       ) : (
-        <>Paid by {primaryPayer?.name ?? 'Unknown'}</>
+        <>Paid by {primaryPayer?.name ? primaryPayer.name.split(' ')[0] : 'Unknown'}</>
       )}
-    </>
+    </span>
   );
 
   const iconSize = dense ? 34 : 42;
@@ -192,11 +192,11 @@ export const ExpenseRowItem: FC<ExpenseRowItemProps> = ({
               <Tooltip title="View receipt">
                 <Button
                   type="text"
-                  size="small"
                   aria-label="View receipt"
-                  icon={<PaperClipOutlined style={{ color: mintPalette.primary }} />}
+                  icon={<PaperClipOutlined style={{ color: mintPalette.primary, fontSize: 16 }} />}
                   onClick={() => onViewReceipt(expense)}
-                  style={{ flexShrink: 0 }}
+                  className="mint-touch-target"
+                  style={{ flexShrink: 0, minWidth: 44, minHeight: 44 }}
                 />
               </Tooltip>
             ) : null}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FC } from 'react';
 import {
   Alert,
@@ -117,6 +117,7 @@ export const ExpenseFormModal: FC<ExpenseFormModalProps> = ({
   const [receiptBusy, setReceiptBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isSubmittingRef = useRef(false);
 
   /** Who can take part: the group's members, or everyone for a direct split. */
   const activeMembers = useMemo(() => {
@@ -274,27 +275,36 @@ export const ExpenseFormModal: FC<ExpenseFormModalProps> = ({
   const blockers = validation.problems;
 
   const handleSubmit = async (): Promise<void> => {
+    if (isSubmittingRef.current) return;
+
     if (blockers.length > 0) {
       setError(blockers[0]);
       return;
     }
 
+    isSubmittingRef.current = true;
     setSubmitting(true);
     setError(null);
 
-    const result = isEditing
-      ? await updateExpense(expense.id, draft, currentUserId)
-      : await createExpense(draft, currentUserId);
+    try {
+      const result = isEditing
+        ? await updateExpense(expense.id, draft, currentUserId)
+        : await createExpense(draft, currentUserId);
 
-    setSubmitting(false);
+      if (!result.ok || !result.expenseId) {
+        setError(result.error ?? 'The expense could not be saved.');
+        return;
+      }
 
-    if (!result.ok || !result.expenseId) {
-      setError(result.error ?? 'The expense could not be saved.');
-      return;
+      onSaved?.(result.expenseId);
+      onClose();
+    } catch (saveError) {
+      const messageText = saveError instanceof Error ? saveError.message : 'Database transaction failed.';
+      setError(messageText);
+    } finally {
+      isSubmittingRef.current = false;
+      setSubmitting(false);
     }
-
-    onSaved?.(result.expenseId);
-    onClose();
   };
 
   const formBody = (

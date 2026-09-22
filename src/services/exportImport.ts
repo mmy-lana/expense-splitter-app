@@ -8,6 +8,7 @@ import {
   serializeSnapshot,
 } from './ledgerSnapshot';
 import type { ImportReport, LedgerSnapshot } from './ledgerSnapshot';
+import type { ActivityLog } from '../types';
 
 /**
  * Backup, restore and export orchestration.
@@ -186,12 +187,38 @@ export async function importExpensesFromCsv(
     return true;
   });
 
-  await db.transaction('rw', db.expenses, async () => {
-    if (options.mode === 'replace') await db.expenses.clear();
+  const now = new Date().toISOString();
+  const activities: ActivityLog[] = accepted.map((exp) => ({
+    id: `act-${exp.id}-${Date.now()}`,
+    groupId: exp.groupId ?? undefined,
+    actorUserId: exp.createdBy,
+    action: exp.isSettlement ? 'SETTLEMENT_RECORDED' : 'EXPENSE_CREATED',
+    entityId: exp.id,
+    metadata: {
+      description: exp.description,
+      amount: exp.amount,
+      currency: exp.currency,
+    },
+    timestamp: exp.date || now,
+  }));
+
+  await db.transaction('rw', db.expenses, db.activities, async () => {
+    if (options.mode === 'replace') {
+      await db.expenses.clear();
+      await db.activities.clear();
+    }
     await db.expenses.bulkPut(accepted);
+    await db.activities.bulkPut(activities);
   });
 
-  return { ...report, imported: { ...report.imported, expenses: accepted.length } };
+  return {
+    ...report,
+    imported: {
+      ...report.imported,
+      expenses: accepted.length,
+      activities: activities.length,
+    },
+  };
 }
 
 /** Dispatches on file extension so the UI can offer one "Import backup" control. */

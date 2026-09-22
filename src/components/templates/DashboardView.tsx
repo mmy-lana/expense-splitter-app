@@ -294,7 +294,7 @@ export const DashboardView: FC<DashboardViewProps> = ({
 
       <Row gutter={[spacing.lg, spacing.lg]}>
         {/* Ledgers */}
-        <Col xs={24} lg={14}>
+        <Col xs={24} xl={14}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.lg }}>
             <Card
               title={
@@ -405,8 +405,8 @@ export const DashboardView: FC<DashboardViewProps> = ({
         </Col>
 
         {/* Settlement path + recent activity */}
-        <Col xs={24} lg={10}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.lg }}>
+        <Col xs={24} xl={10}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.lg, minWidth: 280 }}>
             <DebtSimplificationCard
               transfers={transfers}
               membersMap={membersMap}

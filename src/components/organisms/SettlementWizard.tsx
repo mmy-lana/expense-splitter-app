@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FC } from 'react';
 import { Alert, Button, DatePicker, Input, InputNumber, Modal, Result, Select, Typography } from 'antd';
 import { ArrowRightOutlined, CheckCircleFilled, SwapOutlined } from '@ant-design/icons';
@@ -80,6 +80,7 @@ export const SettlementWizard: FC<SettlementWizardProps> = ({
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [recordedId, setRecordedId] = useState<UUID | null>(null);
+  const isSubmittingRef = useRef(false);
 
   // The suggested amount and every guard rail come from the pure planner, which
   // is the same arithmetic that decides whether the write clears the debt.
@@ -125,6 +126,8 @@ export const SettlementWizard: FC<SettlementWizardProps> = ({
   const remainingAfter = plan.position === 'OWES' ? plan.remainingAfter : null;
 
   const handleSettle = async (): Promise<void> => {
+    if (isSubmittingRef.current) return;
+
     if (isSelfSettlement(payerId, receiverId)) {
       setError('A payment needs two different people.');
       return;
@@ -138,37 +141,43 @@ export const SettlementWizard: FC<SettlementWizardProps> = ({
       return;
     }
 
+    isSubmittingRef.current = true;
     setSubmitting(true);
     setError(null);
 
-    const result = await recordSettlement({
-      fromUserId: payerId,
-      toUserId: receiverId,
-      amount,
-      currency,
-      groupId,
-      note,
-      date: date.toISOString(),
-    });
-
-    setSubmitting(false);
-
-    if (!result.ok || !result.expenseId) {
-      setError(result.error ?? 'That payment could not be recorded.');
-      return;
-    }
-
-    setRecordedId(result.expenseId);
-    onRecorded?.(result.expenseId);
-
-    if (!disableCelebration) {
-      confetti({
-        particleCount: 90,
-        spread: 65,
-        origin: { y: 0.62 },
-        colors: [mintPalette.primary, '#10B981', '#34D399', '#A7F3D0'],
-        disableForReducedMotion: true,
+    try {
+      const result = await recordSettlement({
+        fromUserId: payerId,
+        toUserId: receiverId,
+        amount,
+        currency,
+        groupId,
+        note,
+        date: date.toISOString(),
       });
+
+      if (!result.ok || !result.expenseId) {
+        setError(result.error ?? 'That payment could not be recorded.');
+        return;
+      }
+
+      setRecordedId(result.expenseId);
+      onRecorded?.(result.expenseId);
+
+      if (!disableCelebration) {
+        confetti({
+          particleCount: 90,
+          spread: 65,
+          origin: { y: 0.62 },
+          colors: [mintPalette.primary, '#10B981', '#34D399', '#A7F3D0'],
+          disableForReducedMotion: true,
+        });
+      }
+    } catch (settleErr) {
+      setError(settleErr instanceof Error ? settleErr.message : 'Failed to record settlement.');
+    } finally {
+      isSubmittingRef.current = false;
+      setSubmitting(false);
     }
   };
 

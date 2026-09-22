@@ -9,7 +9,13 @@ import type {
   UserProfile,
   UserProfileMap,
 } from '../types';
-import { BASE_CURRENCY, fromMinorUnits, getMinorUnitFactor, toMinorUnits } from './currency';
+import {
+  BASE_CURRENCY,
+  ZERO_EPSILON,
+  fromMinorUnits,
+  getMinorUnitFactor,
+  toMinorUnits,
+} from './currency';
 
 /**
  * Net-balance vector math and the greedy minimum cash-flow solver.
@@ -336,6 +342,11 @@ export function calculatePairwiseBalance(
       .plus(theirOwed.times(myPaid).dividedBy(paidTotal))
       .minus(myOwed.times(theirPaid).dividedBy(paidTotal));
   }
+
+  // A sub-half-penny residual is the rounding residue of proportional
+  // attribution, not a debt: report it as settled, exactly as the balance tone
+  // tokens do, so the two can never disagree.
+  if (net.abs().isLessThanOrEqualTo(ZERO_EPSILON)) return 0;
 
   return net.decimalPlaces(2, BigNumber.ROUND_HALF_UP).toNumber();
 }

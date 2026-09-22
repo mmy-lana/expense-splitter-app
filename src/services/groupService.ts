@@ -127,6 +127,13 @@ export async function updateGroup(
   const existing = await db.groups.get(groupId);
   if (!existing) return { ok: false, error: 'That group no longer exists.' };
 
+  const isAdmin = existing.members.some(
+    (member) => member.userId === actorUserId && member.role === 'ADMIN'
+  );
+  if (!isAdmin) {
+    return { ok: false, error: 'Only group administrators can modify group configuration.' };
+  }
+
   const now = new Date().toISOString();
   const memberIds = Array.from(new Set([actorUserId, ...draft.memberIds]));
 
@@ -265,15 +272,32 @@ export async function deleteGroup(groupId: UUID, actorUserId: UUID): Promise<Gro
   const group = await db.groups.get(groupId);
   if (!group) return { ok: false, error: 'That group no longer exists.' };
 
-  const expenseCount = await db.expenses.where('groupId').equals(groupId).count();
-  if (expenseCount > 0) {
-    return {
-      ok: false,
-      error: `This group still has ${expenseCount} expense${expenseCount === 1 ? '' : 's'}. Delete them first, or keep the group as an archive.`,
-    };
+  const isAdmin = group.members.some(
+    (member) => member.userId === actorUserId && member.role === 'ADMIN'
+  );
+  if (!isAdmin) {
+    return { ok: false, error: 'Only group administrators can delete this group.' };
   }
 
-  await db.transaction('rw', db.groups, db.activities, async () => {
+  let deletionError: string | null = null;
+
+  await db.transaction('rw', db.groups, db.expenses, db.activities, async () => {
+    // Re-read inside the critical section. Two concurrent deletes must not both
+    // pass the guard above: Dexie serialises these transactions, so the loser
+    // sees the row already gone instead of writing a second audit entry for one
+    // deletion and reporting a success that never happened.
+    const current = await db.groups.get(groupId);
+    if (!current) {
+      deletionError = 'That group no longer exists.';
+      return;
+    }
+
+    const expenseCount = await db.expenses.where('groupId').equals(groupId).count();
+    if (expenseCount > 0) {
+      deletionError = `This group still has ${expenseCount} expense${expenseCount === 1 ? '' : 's'}. Delete them first, or keep the group as an archive.`;
+      return;
+    }
+
     await db.groups.delete(groupId);
     await db.activities.add(
       activity({
@@ -281,10 +305,14 @@ export async function deleteGroup(groupId: UUID, actorUserId: UUID): Promise<Gro
         actorUserId,
         entityId: groupId,
         groupId,
-        metadata: { description: group.name, previousState: JSON.stringify(group) },
+        metadata: { description: current.name, previousState: JSON.stringify(current) },
       })
     );
   });
+
+  if (deletionError) {
+    return { ok: false, error: deletionError };
+  }
 
   return { ok: true, groupId };
 }

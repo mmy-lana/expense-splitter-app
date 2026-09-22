@@ -65,7 +65,10 @@ import {
   GroupsListView,
   ResponsiveAppShell,
   SHELL_TABS,
+  pairUpBalances,
 } from '../src/components/templates';
+import { calculateNetBalances } from '../src/utils/debtEngine';
+import { toMinorUnits } from '../src/utils/currency';
 import { guardRoute, resolveRoute, routeForTab, selectVisibleGroups } from '../src/app/routes';
 import { DEFAULT_LEDGER_FILTERS } from '../src/stores/useFilterStore';
 import type {
@@ -75,6 +78,7 @@ import type {
   Group,
   UserProfile,
   UserProfileMap,
+  UUID,
 } from '../src/types';
 import {
   assert,
@@ -462,7 +466,7 @@ test('describes what an expense did to the signed-in user', () => {
   assertContains(lent, '$213.33', 'the net credit is shown');
   assertContains(lent, BALANCE_TONES.credit.text, 'credit tone');
   assertContains(lent, 'Sep 1, 2026', 'date is formatted');
-  assertContains(lent, 'Paid by Alex Rivera', 'single payer is named');
+  assertContains(lent, 'Paid by Alex', 'single payer is named by first name to fit the column');
   assertContains(lent, 'Equally', 'split method is surfaced');
 
   const borrowed = render(
@@ -1381,7 +1385,14 @@ test('renders the brand, navigation and primary actions', () => {
   assertContains(markup, '>Split</span>', 'the brand suffix is rendered in the accent colour');
   assertContains(markup, 'VIEW_CONTENT', 'children are rendered inside the shell');
   assertContains(markup, 'aria-label="Add an expense"', 'the add action is labelled');
-  assertContains(markup, 'aria-label="Record a payment"', 'the settle action is labelled');
+  // Server rendering resolves the phone layout, and the 360px header budget fits
+  // exactly one labelled action: the settle flow is reached from the overflow
+  // sheet on phones instead of a second button that would overflow the header.
+  assertAbsent(
+    markup,
+    'aria-label="Record a payment"',
+    'the phone header keeps only the primary action'
+  );
   assertContains(markup, 'aria-label="Switch who you are"', 'the identity switcher is labelled');
 });
 
@@ -1571,6 +1582,219 @@ test('handles a group with no expenses without breaking', () => {
     'has no expenses yet',
     'the ledger empty state names the group'
   );
+});
+
+section('GroupDetailView \u2014 as-recorded settlement allocator');
+
+/** An exact-split ledger row, used to build deterministic net positions. */
+const ledgerRow = (
+  id: string,
+  paidBy: { userId: UUID; amountPaid: number }[],
+  splits: { userId: UUID; owedAmount: number }[]
+): ExpenseItem => ({
+  id,
+  groupId: null,
+  description: `Row ${id}`,
+  category: 'GENERAL',
+  amount: paidBy.reduce((total, payer) => total + payer.amountPaid, 0),
+  currency: 'USD',
+  paidBy,
+  splitType: 'EXACT',
+  splits,
+  date: '2026-09-01T00:00:00.000Z',
+  isSettlement: false,
+  createdBy: paidBy[0].userId,
+  createdAt: '2026-09-01T00:00:00.000Z',
+  updatedAt: '2026-09-01T00:00:00.000Z',
+});
+
+/**
+ * Five members whose nets are +60, +10, 0, -20 and -50: two creditors, two
+ * debtors. A cross-product allocator emits four transfers totalling 90 against a
+ * real obligation of 70, which is the bug this ledger is shaped to catch.
+ */
+const AS_RECORDED_MEMBER_IDS: UUID[] = ['r1', 'r2', 'r3', 'r4', 'r5'];
+
+const AS_RECORDED_EXPENSES: ExpenseItem[] = [
+  ledgerRow(
+    'ar-1',
+    [{ userId: 'r1', amountPaid: 90 }],
+    [
+      { userId: 'r1', owedAmount: 30 },
+      { userId: 'r2', owedAmount: 30 },
+      { userId: 'r3', owedAmount: 30 },
+    ]
+  ),
+  ledgerRow(
+    'ar-2',
+    [{ userId: 'r2', amountPaid: 60 }],
+    [
+      { userId: 'r2', owedAmount: 20 },
+      { userId: 'r4', owedAmount: 20 },
+      { userId: 'r5', owedAmount: 20 },
+    ]
+  ),
+  ledgerRow(
+    'ar-3',
+    [{ userId: 'r3', amountPaid: 40 }],
+    [
+      { userId: 'r3', owedAmount: 10 },
+      { userId: 'r5', owedAmount: 30 },
+    ]
+  ),
+];
+
+const AS_RECORDED_MEMBERS: UserProfile[] = AS_RECORDED_MEMBER_IDS.map((id, index) => ({
+  id,
+  name: `Person ${index + 1}`,
+  email: '',
+  avatarUrl: '',
+  defaultCurrency: 'USD',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+}));
+
+const AS_RECORDED_MEMBER_MAP: UserProfileMap = new Map(
+  AS_RECORDED_MEMBERS.map((user) => [user.id, user])
+);
+
+const AS_RECORDED_GROUP: Group = {
+  id: 'group-as-recorded',
+  name: 'As Recorded Ledger',
+  category: 'OTHER',
+  description: '',
+  currency: 'USD',
+  avatarIcon: 'TeamOutlined',
+  simplifyDebts: false,
+  members: AS_RECORDED_MEMBER_IDS.map((userId, index) => ({
+    userId,
+    joinedAt: '2026-01-01T00:00:00.000Z',
+    role: index === 0 ? ('ADMIN' as const) : ('MEMBER' as const),
+  })),
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const renderAsRecorded = (group: Group, expenses: ExpenseItem[]): string =>
+  render(
+    createElement(GroupDetailView, {
+      group,
+      members: AS_RECORDED_MEMBERS,
+      membersMap: AS_RECORDED_MEMBER_MAP,
+      currentUserId: 'r1',
+      expenses,
+      filters: DEFAULT_LEDGER_FILTERS,
+      filteredExpenses: expenses,
+      initialTab: 'BALANCES',
+      onBack: noop,
+      onAddExpense: noop,
+      onEditGroup: noop,
+      onAddMember: noop,
+      onRemoveMember: noop,
+      onDeleteGroup: noop,
+      onSelectFriend: noop,
+      onEditExpense: noop,
+      onDeleteExpense: noop,
+      onViewReceipt: noop,
+      onSettleTransfer: noop,
+      onSettleMember: noop,
+    })
+  );
+
+test('the as-recorded allocator never allocates more than the net liabilities', () => {
+  const balances = calculateNetBalances(AS_RECORDED_MEMBER_IDS, AS_RECORDED_EXPENSES, 'USD');
+  const transfers = pairUpBalances(balances, 'USD');
+
+  const owedMinor = Array.from(balances.values())
+    .filter((value) => value.isGreaterThan(0))
+    .reduce((total, value) => total + toMinorUnits(value.toNumber(), 'USD'), 0);
+  const allocated = transfers.reduce(
+    (total, transfer) => total + toMinorUnits(transfer.amount, 'USD'),
+    0
+  );
+
+  assertEqual(owedMinor, toMinorUnits(70, 'USD'), 'the ledger owes exactly 70');
+  assertEqual(allocated, toMinorUnits(70, 'USD'), 'the plan allocates the net liability, no more');
+  assertEqual(transfers.length, 3, 'two creditors and two debtors need three payments');
+
+  const flows = new Map<UUID, number>();
+  for (const transfer of transfers) {
+    flows.set(
+      transfer.fromUserId,
+      (flows.get(transfer.fromUserId) ?? 0) - toMinorUnits(transfer.amount, 'USD')
+    );
+    flows.set(
+      transfer.toUserId,
+      (flows.get(transfer.toUserId) ?? 0) + toMinorUnits(transfer.amount, 'USD')
+    );
+  }
+
+  for (const id of AS_RECORDED_MEMBER_IDS) {
+    const net = toMinorUnits(balances.get(id)?.toNumber() ?? 0, 'USD');
+    const moved = flows.get(id) ?? 0;
+    assert(moved * net >= 0, `${id} must not be moved to the wrong side of zero`);
+    assert(Math.abs(moved) <= Math.abs(net), `${id} moved ${moved} against a net of ${net}`);
+  }
+});
+
+test('the as-recorded allocator reconciles to the penny on fractional splits', () => {
+  const fractional: ExpenseItem[] = [
+    ledgerRow(
+      'fr-1',
+      [{ userId: 'r1', amountPaid: 100 }],
+      [
+        { userId: 'r1', owedAmount: 33.33 },
+        { userId: 'r2', owedAmount: 33.33 },
+        { userId: 'r3', owedAmount: 33.34 },
+      ]
+    ),
+    ledgerRow(
+      'fr-2',
+      [{ userId: 'r4', amountPaid: 10 }],
+      [
+        { userId: 'r4', owedAmount: 3.33 },
+        { userId: 'r5', owedAmount: 3.33 },
+        { userId: 'r3', owedAmount: 3.34 },
+      ]
+    ),
+  ];
+
+  const balances = calculateNetBalances(AS_RECORDED_MEMBER_IDS, fractional, 'USD');
+  const transfers = pairUpBalances(balances, 'USD');
+  const owedMinor = Array.from(balances.values())
+    .filter((value) => value.isGreaterThan(0))
+    .reduce((total, value) => total + toMinorUnits(value.toNumber(), 'USD'), 0);
+
+  assertEqual(
+    transfers.reduce((total, transfer) => total + toMinorUnits(transfer.amount, 'USD'), 0),
+    owedMinor,
+    'no penny is leaked or invented'
+  );
+  for (const transfer of transfers) {
+    assert(transfer.amount > 0, 'a zero-value transfer is never emitted');
+    assert(
+      transfer.fromUserId !== transfer.toUserId,
+      'a member never pays themselves'
+    );
+  }
+});
+
+test('the balances panel states the conserved total for an as-recorded ledger', () => {
+  const markup = renderAsRecorded(AS_RECORDED_GROUP, AS_RECORDED_EXPENSES);
+  assertContains(
+    markup,
+    '$70.00 outstanding across 3 payments',
+    'the panel reports the real obligation, not the cross product'
+  );
+  assertContains(markup, 'as recorded', 'the ledger is labelled as unsimplified');
+});
+
+test('the raw debt count reports unordered pairs, not ordered ones', () => {
+  const simplified: Group = { ...AS_RECORDED_GROUP, simplifyDebts: true };
+  const markup = renderAsRecorded(simplified, AS_RECORDED_EXPENSES);
+
+  assertContains(markup, 'resolved 10 separate debts', 'five members are ten unordered pairs');
+  assertAbsent(markup, 'resolved 20 separate debts', 'the ordered-product formula is gone');
 });
 
 section('FriendsDetailView \u2014 pairwise ledger');
