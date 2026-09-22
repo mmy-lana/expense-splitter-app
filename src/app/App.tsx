@@ -18,7 +18,6 @@ import {
   Radio,
   Space,
   Popconfirm,
-  Tag,
   Grid,
   Spin,
   message,
@@ -40,10 +39,11 @@ import confetti from 'canvas-confetti';
 import { db } from '../services/db';
 import { seedInitialDataIfEmpty } from '../services/dbSeed';
 import { cleanFinanceMintTheme } from '../theme';
-import { formatMoney, CURRENCY_SYMBOLS } from '../utils/currency';
-import { calculateSimplifiedDebts, computeSplits } from '../utils/debtEngine';
+import { formatMoney } from '../utils/currency';
+import { calculateSimplifiedDebts } from '../utils/debtEngine';
+import { computeSplits } from '../utils/splitEngine';
 import { useAppStore } from '../stores/useAppStore';
-import type { ExpenseItem, UserProfile, UUID, CurrencyCode, SplitType, ExpenseCategory } from '../types';
+import type { UserProfile, UUID, SplitType, ExpenseCategory } from '../types';
 
 const { Header, Content } = Layout;
 const { useBreakpoint } = Grid;

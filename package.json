@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "verify": "node --import ./scripts/ts-register.mjs scripts/verify-engine.ts",
     "preview": "vite preview"
   },
   "dependencies": {

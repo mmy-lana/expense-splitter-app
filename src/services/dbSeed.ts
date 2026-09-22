@@ -1,166 +1,120 @@
 import { db } from './db';
-import type { UserProfile, Group, ExpenseItem, ActivityLog } from '../types';
+import { buildSeedDataset, SEED_GROUP_IDS, SEED_USER_IDS } from './seedDataset';
+import type { SeedDataset } from './seedDataset';
+import type { ISODateString } from '../types';
 
-export async function seedInitialDataIfEmpty(): Promise<void> {
+/**
+ * Seed persistence layer.
+ *
+ * The demo dataset itself is owned by `seedDataset.ts`, which is pure and
+ * storage-free so the verification harness can audit it without IndexedDB. This
+ * module is the only place that is allowed to write it into Dexie, and every
+ * write happens inside a single read-write transaction: either the whole demo
+ * ledger lands, or nothing does.
+ */
+
+export { SEED_GROUP_IDS, SEED_USER_IDS };
+export type { SeedDataset, SeedSpec } from './seedDataset';
+
+export interface SeedResult {
+  /** `true` when this call inserted the dataset, `false` when it was a no-op. */
+  seeded: boolean;
+  counts: {
+    users: number;
+    groups: number;
+    expenses: number;
+    activities: number;
+  };
+}
+
+function emptyCounts(): SeedResult['counts'] {
+  return { users: 0, groups: 0, expenses: 0, activities: 0 };
+}
+
+/** Writes an entire dataset atomically. Callers own the surrounding decision. */
+async function persistDataset(dataset: SeedDataset): Promise<void> {
+  await db.transaction('rw', db.users, db.groups, db.expenses, db.activities, async () => {
+    await db.users.bulkAdd(dataset.users);
+    await db.groups.bulkAdd(dataset.groups);
+    await db.expenses.bulkAdd(dataset.expenses);
+    await db.activities.bulkAdd(dataset.activities);
+  });
+}
+
+/**
+ * Seeds the demo dataset once, on first launch.
+ *
+ * The users table is the emptiness sentinel: a database with users but no
+ * expenses is a legitimate state (the user deleted every row) and must never be
+ * silently repopulated.
+ */
+export async function seedInitialDataIfEmpty(): Promise<boolean> {
   const userCount = await db.users.count();
-  if (userCount > 0) return;
+  if (userCount > 0) return false;
 
-  const now = new Date().toISOString();
+  const dataset = buildSeedDataset();
+  await persistDataset(dataset);
+  return true;
+}
 
-  const primaryUser: UserProfile = {
-    id: 'user-self',
-    name: 'Alex Rivera (You)',
-    email: 'alex@cleanfinance.internal',
-    avatarUrl: '',
-    defaultCurrency: 'USD',
-    createdAt: now,
-    updatedAt: now,
+/**
+ * Rebuilds the demo dataset from scratch, discarding every local change.
+ *
+ * Clearing and writing share one transaction, so a failure mid-way cannot leave
+ * a half-wiped database behind.
+ */
+export async function seedDemoData(seedTimestamp: number = Date.now()): Promise<SeedResult> {
+  const dataset = buildSeedDataset(seedTimestamp);
+
+  await db.transaction('rw', db.users, db.groups, db.expenses, db.activities, async () => {
+    await db.activities.clear();
+    await db.expenses.clear();
+    await db.groups.clear();
+    await db.users.clear();
+    await db.users.bulkAdd(dataset.users);
+    await db.groups.bulkAdd(dataset.groups);
+    await db.expenses.bulkAdd(dataset.expenses);
+    await db.activities.bulkAdd(dataset.activities);
+  });
+
+  return {
+    seeded: true,
+    counts: {
+      users: dataset.users.length,
+      groups: dataset.groups.length,
+      expenses: dataset.expenses.length,
+      activities: dataset.activities.length,
+    },
   };
+}
 
-  const friend1: UserProfile = {
-    id: 'user-sarah',
-    name: 'Sarah Chen',
-    email: 'sarah.c@cleanfinance.internal',
-    avatarUrl: '',
-    defaultCurrency: 'USD',
-    createdAt: now,
-    updatedAt: now,
-  };
+/** Row counts currently stored on device. */
+export async function getSeedCounts(): Promise<SeedResult['counts']> {
+  const [users, groups, expenses, activities] = await Promise.all([
+    db.users.count(),
+    db.groups.count(),
+    db.expenses.count(),
+    db.activities.count(),
+  ]);
+  return { users, groups, expenses, activities };
+}
 
-  const friend2: UserProfile = {
-    id: 'user-marcus',
-    name: 'Marcus Vance',
-    email: 'marcus.v@cleanfinance.internal',
-    avatarUrl: '',
-    defaultCurrency: 'USD',
-    createdAt: now,
-    updatedAt: now,
-  };
+/**
+ * Idempotent bootstrap used by the app shell: guarantees the ledger is readable
+ * on first paint, and reports what is actually on device afterwards.
+ */
+export async function ensureSeeded(): Promise<SeedResult> {
+  try {
+    const seeded = await seedInitialDataIfEmpty();
+    return { seeded, counts: await getSeedCounts() };
+  } catch (error) {
+    console.error('[MintSplit] Failed to seed the local database', error);
+    return { seeded: false, counts: emptyCounts() };
+  }
+}
 
-  const friend3: UserProfile = {
-    id: 'user-elena',
-    name: 'Elena Rostova',
-    email: 'elena.r@cleanfinance.internal',
-    avatarUrl: '',
-    defaultCurrency: 'USD',
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await db.users.bulkAdd([primaryUser, friend1, friend2, friend3]);
-
-  const groupTrip: Group = {
-    id: 'group-kyoto',
-    name: 'Kyoto Retreat',
-    category: 'TRIP',
-    description: 'Shared train, hotel, and food expenses',
-    currency: 'USD',
-    avatarIcon: 'CompassOutlined',
-    simplifyDebts: true,
-    members: [
-      { userId: 'user-self', joinedAt: now, role: 'ADMIN' },
-      { userId: 'user-sarah', joinedAt: now, role: 'MEMBER' },
-      { userId: 'user-marcus', joinedAt: now, role: 'MEMBER' },
-      { userId: 'user-elena', joinedAt: now, role: 'MEMBER' },
-    ],
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  const groupHome: Group = {
-    id: 'group-home',
-    name: 'Apartment 4B',
-    category: 'HOME',
-    description: 'Utilities, internet and groceries',
-    currency: 'USD',
-    avatarIcon: 'HomeOutlined',
-    simplifyDebts: true,
-    members: [
-      { userId: 'user-self', joinedAt: now, role: 'ADMIN' },
-      { userId: 'user-marcus', joinedAt: now, role: 'MEMBER' },
-    ],
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await db.groups.bulkAdd([groupTrip, groupHome]);
-
-  const exp1: ExpenseItem = {
-    id: 'exp-101',
-    groupId: 'group-kyoto',
-    description: 'Kaiseki Dinner',
-    category: 'FOOD_AND_DRINK',
-    amount: 320.0,
-    currency: 'USD',
-    paidBy: [{ userId: 'user-self', amountPaid: 320.0 }],
-    splitType: 'EQUAL',
-    splits: [
-      { userId: 'user-self', owedAmount: 80.0 },
-      { userId: 'user-sarah', owedAmount: 80.0 },
-      { userId: 'user-marcus', owedAmount: 80.0 },
-      { userId: 'user-elena', owedAmount: 80.0 },
-    ],
-    date: new Date(Date.now() - 86400000 * 2).toISOString(),
-    notes: 'Paid with card. Receipt kept.',
-    isSettlement: false,
-    createdBy: 'user-self',
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  const exp2: ExpenseItem = {
-    id: 'exp-102',
-    groupId: 'group-kyoto',
-    description: 'Express Train Passes',
-    category: 'TRANSPORTATION',
-    amount: 480.0,
-    currency: 'USD',
-    paidBy: [{ userId: 'user-sarah', amountPaid: 480.0 }],
-    splitType: 'EQUAL',
-    splits: [
-      { userId: 'user-self', owedAmount: 120.0 },
-      { userId: 'user-sarah', owedAmount: 120.0 },
-      { userId: 'user-marcus', owedAmount: 120.0 },
-      { userId: 'user-elena', owedAmount: 120.0 },
-    ],
-    date: new Date(Date.now() - 86400000).toISOString(),
-    isSettlement: false,
-    createdBy: 'user-sarah',
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  const exp3: ExpenseItem = {
-    id: 'exp-103',
-    groupId: 'group-home',
-    description: 'High-speed Fiber Internet',
-    category: 'HOME_UTILITIES',
-    amount: 85.0,
-    currency: 'USD',
-    paidBy: [{ userId: 'user-marcus', amountPaid: 85.0 }],
-    splitType: 'EQUAL',
-    splits: [
-      { userId: 'user-self', owedAmount: 42.5 },
-      { userId: 'user-marcus', owedAmount: 42.5 },
-    ],
-    date: new Date().toISOString(),
-    isSettlement: false,
-    createdBy: 'user-marcus',
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await db.expenses.bulkAdd([exp1, exp2, exp3]);
-
-  const act1: ActivityLog = {
-    id: 'act-1',
-    groupId: 'group-kyoto',
-    actorUserId: 'user-self',
-    action: 'EXPENSE_CREATED',
-    entityId: 'exp-101',
-    metadata: { description: 'Kaiseki Dinner', amount: 320.0, currency: 'USD' },
-    timestamp: now,
-  };
-
-  await db.activities.bulkAdd([act1]);
+/** Timestamp of the most recent ledger mutation, used by diagnostics views. */
+export async function getLatestActivityTimestamp(): Promise<ISODateString | null> {
+  const latest = await db.activities.orderBy('timestamp').last();
+  return latest ? latest.timestamp : null;
 }
