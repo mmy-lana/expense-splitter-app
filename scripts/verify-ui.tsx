@@ -1790,6 +1790,94 @@ test('every tab the shell renders resolves to a route', () => {
   }
 });
 
+/* ------------------------------------------------------ accessibility gate */
+
+section('Accessibility \u2014 names, states and landmarks');
+
+test('an interactive avatar is a keyboard-reachable button', () => {
+  const markup = render(
+    createElement(UserAvatar, { name: 'Alex Rivera', onClick: () => undefined })
+  );
+  assertContains(markup, 'role="button"', 'a clickable avatar is exposed as a button');
+  assertContains(markup, 'tabindex="0"', 'a clickable avatar is keyboard reachable');
+});
+
+test('a decorative avatar is neither a button nor focusable', () => {
+  const markup = render(createElement(UserAvatar, { name: 'Alex Rivera', showTooltip: false }));
+  assertAbsent(markup, 'role="button"', 'a static avatar is not a button');
+  assertAbsent(markup, 'tabindex="0"', 'a static avatar is not focusable');
+});
+
+test('every money figure exposes a precise accessible value', () => {
+  const markup = render(
+    createElement(CurrencyDisplay, { amount: 1234.5, currency: 'USD', compact: true })
+  );
+  assertContains(markup, 'aria-label="$1234.50"', 'the exact value is announced, not the abbreviation');
+  assertContains(markup, 'aria-hidden="true"', 'the visual abbreviation is hidden from screen readers');
+});
+
+test('section landmarks are labelled so they can be navigated', () => {
+  const filterBar = render(
+    createElement(SearchFilterBar, { ...filterBarProps, resultCount: 1, totalCount: 1 })
+  );
+  assertContains(filterBar, '<section', 'the filter bar is a section');
+  assertContains(filterBar, 'aria-label="Search and filter expenses"', 'the section is labelled');
+
+  const shell = render(
+    createElement(ResponsiveAppShell, {
+      users: TPL_MEMBERS,
+      groups: [TPL_GROUP],
+      currentUserId: 'user-a',
+      activeTab: 'DASHBOARD',
+      onTabChange: noop,
+      onSwitchUser: noop,
+      onAddExpense: noop,
+      onSettleUp: noop,
+      onOpenBackup: noop,
+      onNewGroup: noop,
+      children: createElement('main', null, 'content'),
+    })
+  );
+  assertContains(shell, '<main', 'the shell provides a main landmark');
+  assertContains(shell, '<header', 'the shell provides a header landmark');
+  assertContains(shell, '<nav', 'the mobile navigation is a nav landmark');
+});
+
+test('toggle state is announced rather than colour-only', () => {
+  const active = render(
+    createElement(SearchFilterBar, {
+      ...filterBarProps,
+      includeSettlements: true,
+      resultCount: 4,
+      totalCount: 4,
+    })
+  );
+  assertContains(active, 'aria-pressed="true"', 'the settlements toggle reports its state');
+
+  const inactive = render(
+    createElement(SearchFilterBar, { ...filterBarProps, resultCount: 4, totalCount: 4 })
+  );
+  assertContains(inactive, 'aria-pressed="false"', 'the off state is reported too');
+});
+
+test('destructive and icon-only actions are labelled for screen readers', () => {
+  const ledger = render(
+    createElement(GroupLedgerTable, {
+      expenses: ORG_EXPENSES,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      forceViewMode: 'CARDS',
+      paginated: false,
+      onDeleteExpense: noop,
+      onEditExpense: noop,
+      onSettleExpense: noop,
+    })
+  );
+  assertContains(ledger, 'aria-label="Delete expense"', 'delete is named');
+  assertContains(ledger, 'aria-label="Edit expense"', 'edit is named');
+  assertContains(ledger, 'aria-label="Settle up"', 'settle is named');
+});
+
 /* ---------------------------------------------------------------- reporting */
 
 exitWithReport();

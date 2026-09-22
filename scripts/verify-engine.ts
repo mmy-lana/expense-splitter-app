@@ -51,6 +51,15 @@ import {
   fitWithin,
   validateReceiptFile,
 } from '../src/services/receiptOcr';
+import {
+  isCompactBucket,
+  layoutMetrics,
+  mobileContentInset,
+  resolveViewportBucket,
+  responsiveSpans,
+  touchTarget,
+} from '../src/theme';
+import type { ViewportBucket } from '../src/theme';
 import { buildSettlementPlan, suggestSettlementAmount } from '../src/utils/settlementPlan';
 import { validateDraft } from '../src/utils/expenseValidation';
 import type { ExpenseDraft } from '../src/utils/expenseValidation';
@@ -65,7 +74,17 @@ import type {
 
 /* ------------------------------------------------------------------ harness */
 
-import { assert, assertEqual, assertThrows, exitWithReport, section, test } from './harness';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  assert,
+  assertContains,
+  assertEqual,
+  assertThrows,
+  exitWithReport,
+  section,
+  test,
+} from './harness';
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -86,6 +105,9 @@ interface FixtureInput {
 }
 
 const DAY_MS = 86_400_000;
+
+/** Resolved once so the stylesheet assertions do not depend on the cwd. */
+const stylesPath = fileURLToPath(new URL('../src/assets/styles/main.css', import.meta.url));
 
 function makeExpense(input: FixtureInput): ExpenseItem {
   const currency: CurrencyCode = input.currency ?? 'USD';
@@ -1668,6 +1690,99 @@ test('JPY drafts are validated in whole yen', () => {
     'JPY splits never produce fractional yen'
   );
   assertEqual(sumSplitAmounts(yen.splits), 1000, 'JPY splits sum exactly');
+});
+
+/* ------------------------------------------------- responsive contract suite */
+
+section('Responsive contract \u2014 360px through 1440px');
+
+test('every validated viewport resolves to the intended layout bucket', () => {
+  const expectations: [number, ViewportBucket][] = [
+    [320, 'MOBILE_SMALL'],
+    [360, 'MOBILE_SMALL'],
+    [361, 'MOBILE'],
+    [390, 'MOBILE'],
+    [430, 'MOBILE'],
+    [600, 'MOBILE'],
+    [767, 'MOBILE'],
+    [768, 'TABLET'],
+    [1023, 'TABLET'],
+    [1024, 'DESKTOP'],
+    [1280, 'DESKTOP'],
+    [1439, 'DESKTOP'],
+    [1440, 'DESKTOP_WIDE'],
+    [1920, 'DESKTOP_WIDE'],
+  ];
+
+  for (const [width, expected] of expectations) {
+    assertEqual(resolveViewportBucket(width), expected, `${width}px resolves to ${expected}`);
+  }
+});
+
+test('degenerate widths degrade to the smallest layout rather than crashing', () => {
+  assertEqual(resolveViewportBucket(0), 'MOBILE_SMALL', 'zero width');
+  assertEqual(resolveViewportBucket(-100), 'MOBILE_SMALL', 'negative width');
+  assertEqual(resolveViewportBucket(Number.NaN), 'MOBILE_SMALL', 'NaN width');
+  // Unusable input falls back to the *most constrained* layout: a narrow single
+  // column is always readable, whereas optimistically rendering the wide desktop
+  // layout could overflow an unknown device.
+  assertEqual(resolveViewportBucket(Number.POSITIVE_INFINITY), 'MOBILE_SMALL', 'non-finite width');
+});
+
+test('compact layouts identify the viewports that need stacked controls', () => {
+  assert(isCompactBucket('MOBILE_SMALL'), '360px is compact');
+  assert(isCompactBucket('MOBILE'), '390-767px is compact');
+  assert(!isCompactBucket('TABLET'), '768px is not compact');
+  assert(!isCompactBucket('DESKTOP'), '1024px is not compact');
+  assert(!isCompactBucket('DESKTOP_WIDE'), '1440px is not compact');
+});
+
+test('every grid span collapses to a full-width column on phones', () => {
+  for (const [name, span] of Object.entries(responsiveSpans)) {
+    assertEqual(
+      (span as { xs: number }).xs === 12 || (span as { xs: number }).xs === 24,
+      true,
+      `${name} must start at 12 or 24 units on the smallest viewport`
+    );
+  }
+  assertEqual(responsiveSpans.full.xs, 24, 'ledgers and forms are full width on phones');
+  assertEqual(responsiveSpans.half.xs, 24, 'halves stack on phones');
+  assertEqual(responsiveSpans.half.sm, 12, 'halves sit side by side from 576px');
+  assertEqual(responsiveSpans.primary.xs, 24, 'the ledger column is full width on phones');
+  assertEqual(responsiveSpans.primary.lg, 15, 'the ledger column shares a 24-unit row from 1024px');
+  assertEqual(
+    responsiveSpans.primary.lg + responsiveSpans.secondary.lg,
+    24,
+    'the ledger and its rail always fill exactly one row'
+  );
+});
+
+test('the fixed mobile navigation is accounted for in content insets', () => {
+  assertEqual(mobileContentInset(false), 0, 'desktop content needs no reserved gutter');
+  assert(mobileContentInset(true) > layoutMetrics.mobileNavHeight, 'mobile content clears the nav bar');
+});
+
+test('touch targets meet the 44px minimum everywhere', () => {
+  assert(touchTarget.min >= 44, 'the design token floor is at least 44px');
+  assert(touchTarget.comfortable >= touchTarget.min, 'the comfortable target is larger');
+  assert(
+    layoutMetrics.mobileNavHeight >= touchTarget.min,
+    'the bottom nav bar is at least one touch target tall'
+  );
+});
+
+test('the stylesheet implements the responsive and accessibility rules', () => {
+  const css = readFileSync(stylesPath, 'utf8');
+
+  assertContains(css, 'min-width: 768px', 'the bottom navigation is hidden from 768px up');
+  assertContains(css, '.mobile-bottom-nav', 'the bottom navigation has a class hook');
+  assertContains(css, 'prefers-reduced-motion', 'reduced-motion preferences are honoured');
+  assertContains(css, 'safe-area-inset-bottom', 'iOS safe-area insets are honoured');
+  assertContains(css, 'overflow-x: hidden', 'the page cannot scroll sideways at 360px');
+  assertContains(css, ':focus-visible', 'keyboard focus is visible');
+  assertContains(css, '--touch-target: 44px', 'the touch-target token is defined in CSS too');
+  assertContains(css, 'tabular-nums', 'money numerals are tabular globally');
+  assertContains(css, 'box-sizing: border-box', 'layout box model is normalised');
 });
 
 /* ---------------------------------------------------------------- reporting */

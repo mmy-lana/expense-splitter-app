@@ -361,3 +361,55 @@ export const antdBreakpoints = {
   xl: 1200,
   xxl: 1600,
 } as const;
+
+/* -------------------------------------------------- responsive contract */
+
+/** The five layouts the app is validated against. */
+export type ViewportBucket = 'MOBILE_SMALL' | 'MOBILE' | 'TABLET' | 'DESKTOP' | 'DESKTOP_WIDE';
+
+/**
+ * Classifies a pixel width into its validated layout bucket.
+ *
+ * Pure and framework-free on purpose: the shell uses it at runtime, and the
+ * verification harness asserts the boundaries at 360, 390, 430, 768, 1024 and
+ * 1440px without needing a browser.
+ */
+export function resolveViewportBucket(width: number): ViewportBucket {
+  if (!Number.isFinite(width) || width <= 0) return 'MOBILE_SMALL';
+  if (width >= viewportTargets.desktopUltra) return 'DESKTOP_WIDE';
+  if (width >= viewportTargets.desktop) return 'DESKTOP';
+  if (width >= viewportTargets.tablet) return 'TABLET';
+  if (width > viewportTargets.mobileSmall) return 'MOBILE';
+  return 'MOBILE_SMALL';
+}
+
+/** True when a bucket needs stacked, full-width, thumb-first controls. */
+export function isCompactBucket(bucket: ViewportBucket): boolean {
+  return bucket === 'MOBILE_SMALL' || bucket === 'MOBILE';
+}
+
+/**
+ * Grid spans that collapse to a single column at 360px and expand from 768px.
+ *
+ * `xs: 24` is what guarantees no horizontal scroll on the smallest validated
+ * viewport: every column takes the full 24-unit row width.
+ */
+export const responsiveSpans = {
+  /** Metric tiles: 2-up on phones, 3-up from tablet, 4-up on wide desktop. */
+  metric: { xs: 12, sm: 12, md: 8, xl: 6 },
+  /** Main ledger column paired with the settlement rail. */
+  primary: { xs: 24, lg: 15, xxl: 16 },
+  secondary: { xs: 24, lg: 9, xxl: 8 },
+  /** Equal halves that stack on phones. */
+  half: { xs: 24, sm: 12 },
+  /** Always full width, used for stacked ledgers and forms. */
+  full: { xs: 24 },
+} as const;
+
+/**
+ * Bottom padding that keeps scrolling content clear of the fixed mobile
+ * navigation, including the iOS home indicator inset.
+ */
+export function mobileContentInset(isMobile: boolean): number {
+  return isMobile ? layoutMetrics.mobileNavHeight + 16 : 0;
+}
