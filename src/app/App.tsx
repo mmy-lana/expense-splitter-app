@@ -389,7 +389,7 @@ export const AppContent: React.FC = () => {
           <Button
             type="primary"
             icon={<PlusOutlined />}
-            onClick={openExpenseModal}
+            onClick={() => openExpenseModal()}
             style={{ backgroundColor: '#00A86B', fontWeight: 600, minHeight: 38 }}
           >
             {!isMobile && 'Add Expense'}

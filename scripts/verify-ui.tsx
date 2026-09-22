@@ -48,7 +48,15 @@ import {
   isPayerDistributionBalanced,
   sumPayerAmounts,
 } from '../src/components/molecules';
-import type { ExpenseItem, UserProfile, UserProfileMap } from '../src/types';
+import {
+  BalanceCallout,
+  DebtSimplificationCard,
+  DebtSummaryBar,
+  GroupAnalytics,
+  GroupLedgerTable,
+  LedgerTotalsBar,
+} from '../src/components/organisms';
+import type { DebtTransfer, ExpenseItem, UserProfile, UserProfileMap } from '../src/types';
 import {
   assert,
   assertAbsent,
@@ -866,6 +874,336 @@ test('renders a selection affordance only when selectable', () => {
     createElement(MemberBalanceCard, { user: LEDGER_MEMBERS[1], netBalance: 10 })
   );
   assertAbsent(staticTile, '<button', 'a non-selectable tile is not a button');
+});
+
+/* ---------------------------------------------------- Phase 4 organisms */
+
+const ORG_MEMBERS: UserProfile[] = [
+  { ...LEDGER_MEMBERS[0] },
+  { ...LEDGER_MEMBERS[1] },
+  { ...LEDGER_MEMBERS[2] },
+];
+const ORG_MEMBER_MAP: UserProfileMap = new Map(ORG_MEMBERS.map((user) => [user.id, user]));
+
+/** a pays 90 for a and b, so b owes a 45. */
+const ORG_EXPENSES: ExpenseItem[] = [
+  {
+    id: 'org-1',
+    groupId: 'group-kyoto',
+    description: 'Kaiseki Dinner',
+    category: 'FOOD_AND_DRINK',
+    amount: 90,
+    currency: 'USD',
+    paidBy: [{ userId: 'user-a', amountPaid: 90 }],
+    splitType: 'EQUAL',
+    splits: [
+      { userId: 'user-a', owedAmount: 45 },
+      { userId: 'user-b', owedAmount: 45 },
+    ],
+    date: '2026-09-10T12:00:00.000Z',
+    isSettlement: false,
+    createdBy: 'user-a',
+    createdAt: '2026-09-10T12:00:00.000Z',
+    updatedAt: '2026-09-10T12:00:00.000Z',
+  },
+  {
+    id: 'org-2',
+    groupId: 'group-kyoto',
+    description: 'Rail Passes',
+    category: 'TRANSPORTATION',
+    amount: 60,
+    currency: 'USD',
+    paidBy: [{ userId: 'user-b', amountPaid: 60 }],
+    splitType: 'EQUAL',
+    splits: [
+      { userId: 'user-a', owedAmount: 30 },
+      { userId: 'user-b', owedAmount: 30 },
+    ],
+    date: '2026-09-12T12:00:00.000Z',
+    isSettlement: false,
+    createdBy: 'user-b',
+    createdAt: '2026-09-12T12:00:00.000Z',
+    updatedAt: '2026-09-12T12:00:00.000Z',
+  },
+];
+
+const ORG_TRANSFERS: DebtTransfer[] = [
+  { fromUserId: 'user-b', toUserId: 'user-a', amount: 15, currency: 'USD' },
+];
+
+section('DebtSimplificationCard \u2014 settlement plan visualisation');
+
+test('celebrates a fully settled ledger', () => {
+  const markup = render(
+    createElement(DebtSimplificationCard, {
+      transfers: [],
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      groupName: 'Kyoto Autumn Retreat',
+    })
+  );
+  assertContains(markup, 'All settled up', 'the empty state is affirmative');
+  assertContains(markup, 'Kyoto Autumn Retreat', 'the ledger is named');
+});
+
+test('renders each suggested transfer with its direction and amount', () => {
+  const markup = render(
+    createElement(DebtSimplificationCard, {
+      transfers: ORG_TRANSFERS,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      groupName: 'Kyoto Autumn Retreat',
+      onSettleTransfer: () => undefined,
+    })
+  );
+  assertContains(markup, 'Simplified settlements', 'the card is titled');
+  assertContains(markup, '$15.00', 'the transfer amount is shown');
+  assertContains(markup, 'Settle', 'an actionable transfer offers the action');
+  assertContains(markup, '1 payment', 'the plan size is stated');
+});
+
+test('withholds the settle action when no handler is wired up', () => {
+  const markup = render(
+    createElement(DebtSimplificationCard, {
+      transfers: ORG_TRANSFERS,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+    })
+  );
+  assertAbsent(markup, '>Settle<', 'no action is offered without a handler');
+});
+
+test('labels the direction from the signed-in user\'s point of view', () => {
+  const receiving = render(
+    createElement(DebtSimplificationCard, {
+      transfers: ORG_TRANSFERS,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+    })
+  );
+  assertContains(receiving, 'you receive', 'the receiver is told they receive');
+  assertContains(receiving, 'Your part of the plan', 'their position is summarised');
+
+  const paying = render(
+    createElement(DebtSimplificationCard, {
+      transfers: ORG_TRANSFERS,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-b',
+    })
+  );
+  assertContains(paying, 'you pay', 'the payer is told they pay');
+});
+
+test('explains how many transfers the solver avoided', () => {
+  const markup = render(
+    createElement(DebtSimplificationCard, {
+      transfers: ORG_TRANSFERS,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      rawDebtCount: 6,
+    })
+  );
+  assertContains(markup, '6 separate debts into 1 payment', 'the saving is quantified');
+  assertContains(markup, '5 transfers avoided', 'the number avoided is stated');
+});
+
+test('tells an uninvolved user that nothing concerns them', () => {
+  const markup = render(
+    createElement(DebtSimplificationCard, {
+      transfers: ORG_TRANSFERS,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-c',
+      showAllTransfers: false,
+    })
+  );
+  assertContains(markup, 'You are not involved', 'an outsider is told plainly');
+});
+
+test('DebtSummaryBar nets the plan for one person', () => {
+  const markup = render(
+    createElement(DebtSummaryBar, {
+      transfers: ORG_TRANSFERS,
+      currentUserId: 'user-b',
+      rawDebtCount: 6,
+      currency: 'USD',
+    })
+  );
+  assertContains(markup, 'You owe', 'a net payer is told they owe');
+  assertContains(markup, '$15.00', 'the net amount');
+  assertContains(markup, '6 raw debts → 1 payment', 'the consolidation is stated');
+});
+
+section('GroupLedgerTable \u2014 ledger rendering');
+
+test('offers a single call to action when the ledger is empty', () => {
+  const markup = render(
+    createElement(GroupLedgerTable, {
+      expenses: [],
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      groupName: 'Kyoto Autumn Retreat',
+      onAddExpense: () => undefined,
+      forceViewMode: 'CARDS',
+    })
+  );
+  assertContains(markup, 'Kyoto Autumn Retreat has no expenses yet', 'the empty state is specific');
+  assertContains(markup, 'Add the first expense', 'a way forward is offered');
+});
+
+test('distinguishes "no matches" from "nothing recorded"', () => {
+  const markup = render(
+    createElement(GroupLedgerTable, {
+      expenses: [],
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      totalCount: 42,
+      forceViewMode: 'CARDS',
+    })
+  );
+  assertContains(markup, 'No expenses match the current filters', 'filtering is explained');
+  assertContains(markup, '42 in this ledger', 'the unfiltered total is offered');
+});
+
+test('renders the card presentation for phones', () => {
+  const markup = render(
+    createElement(GroupLedgerTable, {
+      expenses: ORG_EXPENSES,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      forceViewMode: 'CARDS',
+      paginated: false,
+    })
+  );
+  assertContains(markup, 'Kaiseki Dinner', 'rows are rendered');
+  assertContains(markup, 'Rail Passes', 'every row is rendered');
+  assertAbsent(markup, '<table', 'the card presentation is not a table');
+  assertContains(markup, '2 of 2 entries', 'the row count is stated');
+});
+
+test('renders the table presentation for desktop with aligned money', () => {
+  const markup = render(
+    createElement(GroupLedgerTable, {
+      expenses: ORG_EXPENSES,
+      membersMap: ORG_MEMBER_MAP,
+      currentUserId: 'user-a',
+      forceViewMode: 'TABLE',
+      paginated: false,
+    })
+  );
+  assertContains(markup, '<table', 'the table presentation uses a real table');
+  assertContains(markup, 'Your share', 'the personal impact column exists');
+  assertContains(markup, 'Equally', 'the split method is shown');
+  assertContains(markup, 'font-variant-numeric:tabular-nums', 'money columns are tabular');
+});
+
+test('LedgerTotalsBar separates spending from settlements', () => {
+  const markup = render(
+    createElement(LedgerTotalsBar, {
+      expenses: [
+        ...ORG_EXPENSES,
+        {
+          ...ORG_EXPENSES[0],
+          id: 'org-settle',
+          description: 'Settlement Payment',
+          amount: 20,
+          isSettlement: true,
+          paidBy: [{ userId: 'user-b', amountPaid: 20 }],
+          splits: [{ userId: 'user-a', owedAmount: 20 }],
+        },
+      ],
+      currency: 'USD',
+      currentUserId: 'user-a',
+    })
+  );
+  assertContains(markup, 'Spending', 'spending is labelled');
+  assertContains(markup, 'Settlements', 'settlements are labelled separately');
+  assertContains(markup, '$150.00', 'spending excludes the settlement');
+  assertContains(markup, '$20.00', 'the settlement is reported on its own');
+});
+
+section('GroupAnalytics \u2014 spending insight panels');
+
+test('explains an empty ledger instead of rendering empty charts', () => {
+  const markup = render(
+    createElement(GroupAnalytics, {
+      expenses: [],
+      membersMap: ORG_MEMBER_MAP,
+      members: ORG_MEMBERS,
+      groupName: 'Kyoto Autumn Retreat',
+    })
+  );
+  assertContains(markup, 'nothing to analyse', 'the empty state explains itself');
+});
+
+test('renders headline metrics, categories, payers and balances', () => {
+  const markup = render(
+    createElement(GroupAnalytics, {
+      expenses: ORG_EXPENSES,
+      membersMap: ORG_MEMBER_MAP,
+      members: ORG_MEMBERS,
+      currency: 'USD',
+    })
+  );
+  assertContains(markup, 'Total spend', 'total spend tile');
+  assertContains(markup, '$150.00', 'the total is correct (90 + 60)');
+  assertContains(markup, 'Average expense', 'average tile');
+  assertContains(markup, '$75.00', 'the average is correct');
+  assertContains(markup, 'Spending by category', 'category panel');
+  // `&` is escaped in markup, so the assertion uses the serialised form.
+  assertContains(markup, 'Food &amp; Drink', 'a category is labelled');
+  assertContains(markup, 'Who fronted the money', 'payer panel');
+  assertContains(markup, 'Member balances', 'balance panel');
+  assertContains(markup, 'Monthly spend', 'burn panel');
+});
+
+test('renders only the requested panels', () => {
+  const markup = render(
+    createElement(GroupAnalytics, {
+      expenses: ORG_EXPENSES,
+      membersMap: ORG_MEMBER_MAP,
+      members: ORG_MEMBERS,
+      panels: ['CATEGORIES'],
+    })
+  );
+  assertContains(markup, 'Spending by category', 'the requested panel renders');
+  assertAbsent(markup, 'Who fronted the money', 'unrequested panels are omitted');
+  assertAbsent(markup, 'Member balances', 'unrequested panels are omitted');
+});
+
+test('excludes settlements from spending analytics', () => {
+  const markup = render(
+    createElement(GroupAnalytics, {
+      expenses: [
+        ...ORG_EXPENSES,
+        {
+          ...ORG_EXPENSES[0],
+          id: 'org-settle-2',
+          amount: 500,
+          isSettlement: true,
+        },
+      ],
+      membersMap: ORG_MEMBER_MAP,
+      members: ORG_MEMBERS,
+      panels: ['CATEGORIES'],
+    })
+  );
+  assertContains(markup, '$150.00', 'a 500 settlement does not inflate the spend total');
+  assertAbsent(markup, '$650.00', 'settlements are never counted as spending');
+});
+
+test('BalanceCallout states direction in words and colour', () => {
+  const owed = render(
+    createElement(BalanceCallout, { label: 'Net balance', amount: 42.5, currency: 'USD' })
+  );
+  assertContains(owed, 'Net balance', 'the label is shown');
+  assertContains(owed, '$42.50', 'the amount is shown');
+  assertContains(owed, BALANCE_TONES.credit.surface, 'a credit uses the jade surface');
+
+  const owing = render(
+    createElement(BalanceCallout, { label: 'Net balance', amount: -42.5, currency: 'USD' })
+  );
+  assertContains(owing, BALANCE_TONES.debit.surface, 'a debt uses the rose surface');
+  assertDiffers(owed, owing, 'the two directions render differently');
 });
 
 /* ---------------------------------------------------------------- reporting */

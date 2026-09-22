@@ -152,3 +152,23 @@ export interface ActivityLog {
 
 /** A user profile indexed by id, as consumed by the presentational layers. */
 export type UserProfileMap = Map<UUID, UserProfile>;
+
+/**
+ * How a ledger view orders its rows.
+ *
+ * A domain concept rather than a UI one: the store persists it, the filter
+ * predicate applies it, and the toolbar renders it — so it is declared here once
+ * and imported by all three.
+ */
+export type LedgerSortKey =
+  | 'DATE_DESC'
+  | 'DATE_ASC'
+  | 'AMOUNT_DESC'
+  | 'AMOUNT_ASC'
+  | 'DESCRIPTION_ASC';
+
+/** The ledger partitions an expense can belong to. */
+export type LedgerScope = 'ALL' | 'GROUPS' | 'DIRECT';
+
+/** Receipt capture lifecycle, surfaced by the expense form. */
+export type ReceiptStatus = 'IDLE' | 'PROCESSING' | 'READY' | 'FAILED';

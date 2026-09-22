@@ -4,7 +4,7 @@ import { Button, DatePicker, Input, Select, Typography } from 'antd';
 import { CloseOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
-import type { ExpenseCategory, SplitType } from '../../types';
+import type { ExpenseCategory, LedgerSortKey, SplitType } from '../../types';
 import { CATEGORY_OPTIONS, CATEGORY_META } from '../atoms/CategoryIcon';
 import { mintPalette, radii, spacing, typography } from '../../theme';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
@@ -19,12 +19,7 @@ import { SPLIT_TYPE_LABELS } from '../../utils/splitEngine';
  * state lives in `useFilterStore`, so filters survive navigation between views.
  */
 
-export type LedgerSortKey =
-  | 'DATE_DESC'
-  | 'DATE_ASC'
-  | 'AMOUNT_DESC'
-  | 'AMOUNT_ASC'
-  | 'DESCRIPTION_ASC';
+export type { LedgerSortKey };
 
 export const LEDGER_SORT_OPTIONS: { label: string; value: LedgerSortKey }[] = [
   { label: 'Newest first', value: 'DATE_DESC' },

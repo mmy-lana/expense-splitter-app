@@ -30,6 +30,30 @@ import {
 import { fromMinorUnits, toMinorUnits } from '../src/utils/currency';
 import { buildSeedDataset, SEED_GROUP_IDS, SEED_USER_IDS } from '../src/services/seedDataset';
 import type { SeedDataset } from '../src/services/seedDataset';
+import {
+  CSV_COLUMNS,
+  SNAPSHOT_VERSION,
+  createSnapshot,
+  escapeCsvValue,
+  parseExpensesFromCsv,
+  parseSnapshot,
+  serializeExpensesToCsv,
+  serializeSnapshot,
+} from '../src/services/ledgerSnapshot';
+import {
+  DEFAULT_LEDGER_FILTERS,
+  applyLedgerFilters,
+  countActiveFilters,
+  hasActiveFilters,
+} from '../src/stores/useFilterStore';
+import {
+  estimateDataUrlBytes,
+  fitWithin,
+  validateReceiptFile,
+} from '../src/services/receiptOcr';
+import { buildSettlementPlan, suggestSettlementAmount } from '../src/utils/settlementPlan';
+import { validateDraft } from '../src/utils/expenseValidation';
+import type { ExpenseDraft } from '../src/utils/expenseValidation';
 import type {
   CurrencyCode,
   ExpenseCategory,
@@ -41,7 +65,7 @@ import type {
 
 /* ------------------------------------------------------------------ harness */
 
-import { assert, assertEqual, exitWithReport, section, test } from './harness';
+import { assert, assertEqual, assertThrows, exitWithReport, section, test } from './harness';
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -898,6 +922,752 @@ test('seed group ids stay stable for the persistence layer', () => {
     'every demo group needs an admin'
   );
   assertEqual(kyoto.currency, 'USD', 'the demo groups are USD ledgers');
+});
+
+/* ---------------------------------------------------- serialisation suite */
+
+section('Snapshot serialisation \u2014 JSON and CSV round trips');
+
+test('a CSV export round-trips every expense without loss', () => {
+  const expenses = [
+    makeExpense({
+      id: 'e1',
+      amount: 100,
+      description: 'Team dinner',
+      category: 'FOOD_AND_DRINK',
+      paidBy: [{ userId: 'a', amountPaid: 100 }],
+      splitType: 'EQUAL',
+      participantIds: ['a', 'b', 'c'],
+      daysAgo: 3,
+    }),
+    makeExpense({
+      id: 'e2',
+      amount: 64,
+      description: 'Temple passes',
+      category: 'ENTERTAINMENT',
+      paidBy: [
+        { userId: 'a', amountPaid: 32 },
+        { userId: 'b', amountPaid: 32 },
+      ],
+      splitType: 'EQUAL',
+      participantIds: ['a', 'b', 'c'],
+      daysAgo: 2,
+      currency: 'EUR',
+    }),
+  ];
+
+  const csv = serializeExpensesToCsv(expenses);
+  const { expenses: parsed, report } = parseExpensesFromCsv(csv);
+
+  assertEqual(report.skipped.length, 0, 'nothing should be skipped');
+  assertEqual(parsed.length, 2, 'both rows survive the round trip');
+
+  for (const [index, original] of expenses.entries()) {
+    const restored = parsed[index];
+    assertEqual(restored.id, original.id, `row ${index} id`);
+    assertEqual(restored.description, original.description, `row ${index} description`);
+    assertEqual(restored.amount, original.amount, `row ${index} amount`);
+    assertEqual(restored.currency, original.currency, `row ${index} currency`);
+    assertEqual(restored.category, original.category, `row ${index} category`);
+    assertEqual(restored.splitType, original.splitType, `row ${index} split type`);
+    assertEqual(restored.paidBy.length, original.paidBy.length, `row ${index} payer count`);
+    assertEqual(restored.splits.length, original.splits.length, `row ${index} split count`);
+    assertEqual(
+      JSON.stringify(restored.splits),
+      JSON.stringify(original.splits),
+      `row ${index} splits survive exactly`
+    );
+    assertEqual(
+      JSON.stringify(restored.paidBy),
+      JSON.stringify(original.paidBy),
+      `row ${index} multi-payer distribution survives exactly`
+    );
+  }
+});
+
+test('CSV escaping survives commas, quotes and newlines', () => {
+  const tricky = makeExpense({
+    id: 'e-tricky',
+    amount: 10,
+    description: 'Lunch, "the good place"\nwith the team',
+    paidBy: [{ userId: 'a', amountPaid: 10 }],
+    splitType: 'EQUAL',
+    participantIds: ['a', 'b'],
+  });
+
+  const csv = serializeExpensesToCsv([tricky]);
+  const { expenses: parsed } = parseExpensesFromCsv(csv);
+
+  assertEqual(parsed.length, 1, 'a quoted description parses as one row');
+  assertEqual(
+    parsed[0].description,
+    'Lunch, "the good place"\nwith the team',
+    'quotes, commas and newlines are preserved exactly'
+  );
+  assertEqual(escapeCsvValue('plain'), 'plain', 'plain values are not quoted');
+  assertEqual(escapeCsvValue('a,b'), '"a,b"', 'commas force quoting');
+  assertEqual(escapeCsvValue('say "hi"'), '"say ""hi"""', 'inner quotes are doubled');
+});
+
+test('CSV parsing reports missing columns and bad rows instead of throwing', () => {
+  assertThrows(
+    () => parseExpensesFromCsv('description,amount\nDinner,10'),
+    'a CSV without the required columns is rejected'
+  );
+
+  const partial = parseExpensesFromCsv(
+    [
+      CSV_COLUMNS.join(','),
+      'good,2026-09-01T00:00:00.000Z,Dinner,FOOD_AND_DRINK,20,USD,,EQUAL,a:20,a:10|b:10,false,a,',
+      ',,Broken,,,,,,,,,',
+    ].join('\n')
+  );
+  assertEqual(partial.expenses.length, 1, 'only the complete row is imported');
+  assertEqual(partial.report.skipped.length, 1, 'the broken row is reported');
+  assert(
+    (partial.report.skipped[0].reason ?? '').includes('missing'),
+    'the reason explains what was wrong'
+  );
+});
+
+test('a JSON snapshot round-trips users, groups, expenses and activities', () => {
+  const dataset = buildSeedDataset(FIXED_SEED_TIMESTAMP);
+  const snapshot = createSnapshot(dataset);
+  const serialized = serializeSnapshot(snapshot);
+  const { snapshot: restored, report } = parseSnapshot(serialized);
+
+  assertEqual(report.valid, true, 'the snapshot parses');
+  assertEqual(report.skipped.length, 0, 'a clean snapshot skips nothing');
+  assertEqual(restored.users.length, dataset.users.length, 'users survive');
+  assertEqual(restored.groups.length, dataset.groups.length, 'groups survive');
+  assertEqual(restored.expenses.length, dataset.expenses.length, 'expenses survive');
+  assertEqual(restored.activities.length, dataset.activities.length, 'activities survive');
+
+  const originalExpense = dataset.expenses[0];
+  const restoredExpense = restored.expenses.find((expense) => expense.id === originalExpense.id);
+  assert(restoredExpense !== undefined, 'a specific expense is present');
+  assertEqual(restoredExpense.amount, originalExpense.amount, 'amount survives');
+  assertEqual(restoredExpense.splitType, originalExpense.splitType, 'split type survives');
+  assertEqual(
+    JSON.stringify(restoredExpense.splits),
+    JSON.stringify(originalExpense.splits),
+    'splits survive byte for byte'
+  );
+
+  // The restored ledger must still reconcile: a backup that parses but no longer
+  // balances would be worse than a rejected one.
+  assertDatasetReconciles(restored);
+});
+
+test('snapshot parsing rejects impossible input and reports repairs', () => {
+  assertThrows(() => parseSnapshot('{not json'), 'malformed JSON is rejected');
+  assertThrows(() => parseSnapshot('[]'), 'a JSON array is not a snapshot');
+  assertThrows(
+    () => parseSnapshot(JSON.stringify({ version: SNAPSHOT_VERSION + 5, users: [] })),
+    'a future schema version is rejected rather than silently misread'
+  );
+
+  const withOrphan = JSON.stringify({
+    version: SNAPSHOT_VERSION,
+    users: [
+      {
+        id: 'known',
+        name: 'Known Person',
+        email: '',
+        avatarUrl: '',
+        defaultCurrency: 'USD',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    groups: [],
+    expenses: [
+      {
+        id: 'orphan',
+        description: 'Paid by a ghost',
+        amount: 10,
+        currency: 'USD',
+        paidBy: [{ userId: 'ghost', amountPaid: 10 }],
+        splits: [{ userId: 'known', owedAmount: 10 }],
+        splitType: 'EQUAL',
+        date: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    activities: [],
+  });
+
+  const { snapshot, report } = parseSnapshot(withOrphan);
+  assertEqual(snapshot.expenses.length, 0, 'an expense referencing an unknown user is dropped');
+  assertEqual(report.skipped.length, 1, 'the drop is reported, not silent');
+  assert(
+    (report.skipped[0].reason ?? '').includes('user'),
+    'the reason names the problem'
+  );
+
+  const minimal = JSON.stringify({ version: SNAPSHOT_VERSION });
+  const { snapshot: empty } = parseSnapshot(minimal);
+  assertEqual(empty.users.length, 0, 'a snapshot with no tables parses to empty');
+  assertEqual(empty.counts.expenses, 0, 'counts are reported');
+  assertEqual(empty.app, 'mintsplit-expense-splitter', 'the snapshot identifies the app');
+});
+
+/* --------------------------------------------------------- filter suite */
+
+section('Ledger filtering \u2014 search, facets and sorting');
+
+const FILTER_EXPENSES: ExpenseItem[] = [
+  makeExpense({
+    id: 'f1',
+    description: 'Kaiseki Dinner',
+    category: 'FOOD_AND_DRINK',
+    amount: 320,
+    paidBy: [{ userId: 'a', amountPaid: 320 }],
+    splitType: 'EQUAL',
+    participantIds: ['a', 'b'],
+    daysAgo: 1,
+  }),
+  makeExpense({
+    id: 'f2',
+    description: 'JR Rail Passes',
+    category: 'TRANSPORTATION',
+    amount: 480,
+    paidBy: [{ userId: 'b', amountPaid: 480 }],
+    splitType: 'EXACT',
+    participantIds: ['a', 'b'],
+    customValues: { a: 240, b: 240 },
+    daysAgo: 10,
+  }),
+  makeExpense({
+    id: 'f3',
+    description: 'Sake Tasting',
+    category: 'ENTERTAINMENT',
+    amount: 118.2,
+    paidBy: [{ userId: 'a', amountPaid: 118.2 }],
+    splitType: 'SHARES',
+    participantIds: ['a', 'c'],
+    customValues: { a: 2, c: 1 },
+    daysAgo: 40,
+  }),
+  makeExpense({
+    id: 'f4',
+    description: 'Settlement Payment',
+    category: 'GENERAL',
+    amount: 50,
+    paidBy: [{ userId: 'b', amountPaid: 50 }],
+    splitType: 'EXACT',
+    participantIds: ['a'],
+    customValues: { a: 50 },
+    daysAgo: 2,
+    isSettlement: true,
+  }),
+];
+
+test('settlements are excluded from the ledger unless requested', () => {
+  const withoutSettlements = applyLedgerFilters(FILTER_EXPENSES, DEFAULT_LEDGER_FILTERS);
+  assertEqual(withoutSettlements.length, 3, 'settlements hidden by default');
+  assert(
+    withoutSettlements.every((expense) => !expense.isSettlement),
+    'no settlement rows leak through'
+  );
+
+  const withSettlements = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    includeSettlements: true,
+  });
+  assertEqual(withSettlements.length, 4, 'settlements appear when requested');
+});
+
+test('search matches description, notes and category case-insensitively', () => {
+  assertEqual(
+    applyLedgerFilters(FILTER_EXPENSES, { ...DEFAULT_LEDGER_FILTERS, searchText: 'kaiseki' }).length,
+    1,
+    'lowercase search finds a capitalised description'
+  );
+  assertEqual(
+    applyLedgerFilters(FILTER_EXPENSES, { ...DEFAULT_LEDGER_FILTERS, searchText: '  RAIL  ' }).length,
+    1,
+    'surrounding whitespace is ignored'
+  );
+  assertEqual(
+    applyLedgerFilters(FILTER_EXPENSES, { ...DEFAULT_LEDGER_FILTERS, searchText: 'TRANSPORTATION' }).length,
+    1,
+    'the category name is searchable'
+  );
+  assertEqual(
+    applyLedgerFilters(FILTER_EXPENSES, { ...DEFAULT_LEDGER_FILTERS, searchText: 'nothing here' }).length,
+    0,
+    'a miss returns nothing'
+  );
+});
+
+test('category, split type, member and amount facets all narrow the ledger', () => {
+  const byCategory = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    categories: ['FOOD_AND_DRINK', 'ENTERTAINMENT'],
+  });
+  assertEqual(byCategory.length, 2, 'two categories match');
+
+  const bySplitType = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    splitTypes: ['SHARES'],
+  });
+  assertEqual(bySplitType.length, 1, 'one share-based expense');
+  assertEqual(bySplitType[0].id, 'f3', 'the right row matched');
+
+  const byMember = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    memberIds: ['c'],
+  });
+  assertEqual(byMember.length, 1, 'only expenses involving c');
+  assertEqual(byMember[0].id, 'f3', 'c appears on the sake tasting');
+
+  const byAmount = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    minAmount: 200,
+    maxAmount: 400,
+  });
+  assertEqual(byAmount.length, 1, 'only expenses between 200 and 400');
+  assertEqual(byAmount[0].id, 'f1', 'the dinner matched');
+});
+
+test('date range filtering is inclusive at both ends', () => {
+  const now = Date.now();
+  const range = {
+    from: new Date(now - 11 * 86_400_000).toISOString(),
+    to: new Date(now - 9 * 86_400_000).toISOString(),
+  };
+
+  const filtered = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    dateRange: range,
+  });
+  assertEqual(filtered.length, 1, 'only the row inside the window matches');
+  assertEqual(filtered[0].id, 'f2', 'the rail passes fall in the window');
+});
+
+test('sorting orders the ledger deterministically', () => {
+  const byDateDesc = applyLedgerFilters(FILTER_EXPENSES, DEFAULT_LEDGER_FILTERS);
+  assertEqual(byDateDesc[0].id, 'f1', 'newest first by default');
+
+  const byAmountDesc = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    sortKey: 'AMOUNT_DESC',
+  });
+  assertEqual(byAmountDesc[0].id, 'f2', 'largest amount first');
+
+  const byAmountAsc = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    sortKey: 'AMOUNT_ASC',
+  });
+  assertEqual(byAmountAsc[0].id, 'f3', 'smallest amount first');
+
+  const byDescription = applyLedgerFilters(FILTER_EXPENSES, {
+    ...DEFAULT_LEDGER_FILTERS,
+    sortKey: 'DESCRIPTION_ASC',
+  });
+  assertEqual(byDescription[0].description, 'JR Rail Passes', 'alphabetical order');
+
+  const original = FILTER_EXPENSES.map((expense) => expense.id);
+  applyLedgerFilters(FILTER_EXPENSES, { ...DEFAULT_LEDGER_FILTERS, sortKey: 'AMOUNT_DESC' });
+  assertEqual(
+    FILTER_EXPENSES.map((expense) => expense.id).join(','),
+    original.join(','),
+    'filtering never mutates the input array'
+  );
+});
+
+test('active filter counting drives the toolbar badge', () => {
+  assertEqual(countActiveFilters(DEFAULT_LEDGER_FILTERS), 0, 'no filters by default');
+  assert(!hasActiveFilters(DEFAULT_LEDGER_FILTERS), 'nothing active by default');
+
+  assertEqual(
+    countActiveFilters({ ...DEFAULT_LEDGER_FILTERS, searchText: 'kaiseki' }),
+    1,
+    'search counts once'
+  );
+  assertEqual(
+    countActiveFilters({ ...DEFAULT_LEDGER_FILTERS, searchText: '   ' }),
+    0,
+    'whitespace-only search does not count'
+  );
+  assertEqual(
+    countActiveFilters({
+      ...DEFAULT_LEDGER_FILTERS,
+      categories: ['GENERAL', 'LODGING'],
+      splitTypes: ['EQUAL'],
+      memberIds: ['a'],
+      minAmount: 10,
+    }),
+    5,
+    'every facet contributes'
+  );
+  assert(
+    hasActiveFilters({
+      ...DEFAULT_LEDGER_FILTERS,
+      dateRange: { from: '2026-01-01T00:00:00.000Z', to: '2026-12-31T00:00:00.000Z' },
+    }),
+    'a date range counts as active'
+  );
+});
+
+/* ---------------------------------------------------- receipt pipeline suite */
+
+section('Receipt pipeline \u2014 pure helpers');
+
+test('image fitting bounds the longest edge without distorting the aspect ratio', () => {
+  const landscape = fitWithin(4000, 3000, 800);
+  assertEqual(landscape.width, 800, 'longest edge is clamped');
+  assertEqual(landscape.height, 600, 'aspect ratio is preserved');
+
+  const portrait = fitWithin(1200, 2400, 800);
+  assertEqual(portrait.width, 400, 'portrait width scales');
+  assertEqual(portrait.height, 800, 'portrait longest edge is clamped');
+
+  const small = fitWithin(320, 240, 800);
+  assertEqual(small.width, 320, 'a small image is never upscaled');
+  assertEqual(small.height, 240, 'a small image keeps its height');
+  assertEqual(small.scale, 1, 'a small image is unscaled');
+
+  const degenerate = fitWithin(0, 0, 800);
+  assertEqual(degenerate.width, 1, 'a zero-width image cannot produce a zero canvas');
+  assertEqual(degenerate.height, 1, 'a zero-height image cannot produce a zero canvas');
+});
+
+test('data URL size estimation matches the base64 expansion', () => {
+  const payload = 'A'.repeat(400);
+  const dataUrl = `data:image/jpeg;base64,${payload}`;
+  assertEqual(estimateDataUrlBytes(dataUrl), 300, '400 base64 chars decode to 300 bytes');
+  assertEqual(estimateDataUrlBytes('data:image/jpeg;base64,'), 0, 'an empty payload is zero bytes');
+});
+
+test('receipt files are validated before any decoding happens', () => {
+  const notAnImage = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+  assertThrows(() => validateReceiptFile(notAnImage), 'a text file is rejected');
+
+  const emptyImage = new File([], 'empty.jpg', { type: 'image/jpeg' });
+  assertThrows(() => validateReceiptFile(emptyImage), 'an empty image is rejected');
+
+  const goodImage = new File(['x'.repeat(1024)], 'receipt.jpg', { type: 'image/jpeg' });
+  validateReceiptFile(goodImage);
+  assert(true, 'a normal image passes validation');
+});
+
+/* ---------------------------------------------------- settlement plan suite */
+
+section('Settlement planning \u2014 suggestions, guards and clearing');
+
+const SETTLE_EXPENSE = makeExpense({
+  id: 'sp-1',
+  amount: 90,
+  paidBy: [{ userId: 'a', amountPaid: 90 }],
+  splitType: 'EQUAL',
+  participantIds: ['a', 'b'],
+  daysAgo: 5,
+});
+
+test('the suggested amount is exactly what is outstanding', () => {
+  // a fronted 90 and carries a 45 share, so b owes a 45.
+  assertEqual(
+    suggestSettlementAmount('b', 'a', [SETTLE_EXPENSE], 'USD'),
+    45,
+    'the debtor is asked for the exact outstanding amount'
+  );
+  assertEqual(
+    suggestSettlementAmount('a', 'b', [SETTLE_EXPENSE], 'USD'),
+    0,
+    'the creditor is never asked to pay'
+  );
+  assertEqual(
+    suggestSettlementAmount('b', 'a', [], 'USD'),
+    0,
+    'an empty ledger suggests nothing'
+  );
+  assertEqual(
+    suggestSettlementAmount('b', 'a', [SETTLE_EXPENSE], 'JPY'),
+    0,
+    'a currency mismatch suggests nothing'
+  );
+});
+
+test('the plan states the outstanding position from the payer\'s perspective', () => {
+  const debtor = buildSettlementPlan({
+    fromUserId: 'b',
+    toUserId: 'a',
+    amount: 45,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(debtor.position, 'OWES', 'b owes a');
+  assertEqual(debtor.outstanding, 45, 'the outstanding amount is a magnitude');
+  assertEqual(debtor.canSubmit, true, 'a full payment may be submitted');
+  assertEqual(debtor.clearsBalance, true, 'a full payment clears the debt');
+  assertEqual(debtor.remainingAfter, 0, 'nothing remains');
+  assertEqual(debtor.overpays, false, 'an exact payment is not an overpayment');
+
+  const creditor = buildSettlementPlan({
+    fromUserId: 'a',
+    toUserId: 'b',
+    amount: 10,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(creditor.position, 'OWED', 'a is owed by b');
+  assertEqual(creditor.clearsBalance, false, 'paying the wrong way never "clears" anything');
+  assertEqual(creditor.remainingAfter, 10, 'the payment would flip the debt');
+});
+
+test('partial payments report what would remain', () => {
+  const partial = buildSettlementPlan({
+    fromUserId: 'b',
+    toUserId: 'a',
+    amount: 20,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(partial.clearsBalance, false, '20 does not clear a 45 debt');
+  assertEqual(partial.remainingAfter, 25, '25 would remain');
+  assertEqual(partial.canSubmit, true, 'a partial payment is still valid');
+});
+
+test('overpayment is allowed but flagged', () => {
+  const over = buildSettlementPlan({
+    fromUserId: 'b',
+    toUserId: 'a',
+    amount: 60,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(over.clearsBalance, true, 'an overpayment clears the debt');
+  assertEqual(over.overpays, true, 'the overpayment is flagged');
+  assertEqual(over.remainingAfter, 0, 'remaining never goes negative');
+});
+
+test('the plan blocks invalid settlements before any write', () => {
+  const samePerson = buildSettlementPlan({
+    fromUserId: 'a',
+    toUserId: 'a',
+    amount: 10,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(samePerson.canSubmit, false, 'a self-payment is blocked');
+  assert(
+    (samePerson.validationError ?? '').includes('two different people'),
+    'the reason is explained'
+  );
+
+  const noReceiver = buildSettlementPlan({
+    fromUserId: 'a',
+    toUserId: '',
+    amount: 10,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(noReceiver.canSubmit, false, 'a missing receiver is blocked');
+
+  const zero = buildSettlementPlan({
+    fromUserId: 'b',
+    toUserId: 'a',
+    amount: 0,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(zero.canSubmit, false, 'a zero payment is blocked');
+  assertEqual(zero.validationError, 'Enter a payment amount greater than zero.', 'message');
+
+  const negative = buildSettlementPlan({
+    fromUserId: 'b',
+    toUserId: 'a',
+    amount: -20,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(negative.canSubmit, false, 'a negative payment is blocked');
+});
+
+test('sub-penny amounts are treated as zero rather than rounding up', () => {
+  const subPenny = buildSettlementPlan({
+    fromUserId: 'b',
+    toUserId: 'a',
+    amount: 0.004,
+    currency: 'USD',
+    expenses: [SETTLE_EXPENSE],
+  });
+  assertEqual(subPenny.amountMinorUnits, 0, 'a sub-penny amount rounds to zero minor units');
+  assertEqual(subPenny.canSubmit, false, 'and therefore cannot be submitted');
+});
+
+test('a settlement really does zero the outstanding balance', () => {
+  const before = calculateSimplifiedDebts(['a', 'b'], [SETTLE_EXPENSE], 'USD');
+  assertEqual(before.length, 1, 'there is a debt before settling');
+  assertEqual(before[0].amount, 45, 'for the outstanding amount');
+
+  const settlement = makeExpense({
+    id: 'sp-settle',
+    amount: suggestSettlementAmount('b', 'a', [SETTLE_EXPENSE], 'USD'),
+    paidBy: [{ userId: 'b', amountPaid: 45 }],
+    splitType: 'EXACT',
+    participantIds: ['a'],
+    customValues: { a: 45 },
+    isSettlement: true,
+  });
+
+  const after = calculateSimplifiedDebts(['a', 'b'], [SETTLE_EXPENSE, settlement], 'USD');
+  assertEqual(after.length, 0, 'the suggested amount clears the debt exactly');
+  assert(
+    isLedgerBalanced(['a', 'b'], [SETTLE_EXPENSE, settlement], 'USD'),
+    'the ledger still reconciles after settling'
+  );
+});
+
+/* --------------------------------------------------- draft validation suite */
+
+section('Expense draft validation \u2014 the rules the form and writer share');
+
+const validDraft = (overrides: Partial<ExpenseDraft> = {}): ExpenseDraft => ({
+  groupId: null,
+  description: 'Dinner',
+  category: 'FOOD_AND_DRINK',
+  amount: 90,
+  currency: 'USD',
+  paidBy: [{ userId: 'a', amountPaid: 90 }],
+  splitType: 'EQUAL',
+  participantIds: ['a', 'b'],
+  date: new Date().toISOString(),
+  ...overrides,
+});
+
+test('a well-formed draft validates and returns the splits to store', () => {
+  const result = validateDraft(validDraft());
+  assertEqual(result.error, null, 'no error');
+  assertEqual(result.problems.length, 0, 'no problems');
+  assertEqual(result.splits.length, 2, 'two splits are produced');
+  assertEqual(sumSplitAmounts(result.splits), 90, 'the splits reconcile to the total');
+});
+
+test('each missing field produces one clear problem', () => {
+  assertEqual(validateDraft(validDraft({ description: '   ' })).error, 'Give this expense a description.', 'blank description');
+  assertEqual(validateDraft(validDraft({ amount: 0 })).error, 'Enter an amount greater than zero.', 'zero amount');
+  assertEqual(validateDraft(validDraft({ amount: -5 })).error, 'Enter an amount greater than zero.', 'negative amount');
+  assertEqual(validateDraft(validDraft({ amount: Number.NaN })).error, 'Enter an amount greater than zero.', 'NaN amount');
+  assertEqual(
+    validateDraft(validDraft({ participantIds: [] })).error,
+    'Select at least one person to split this expense with.',
+    'no participants'
+  );
+  assertEqual(validateDraft(validDraft({ paidBy: [] })).error, 'Select who paid for this expense.', 'no payer');
+});
+
+test('duplicate participants and duplicate payers are rejected', () => {
+  const duplicates = validateDraft(validDraft({ participantIds: ['a', 'a'] }));
+  assert(
+    (duplicates.problems.join(' ')).includes('only appear once'),
+    'a duplicated participant is reported'
+  );
+
+  const duplicatePayers = validateDraft(
+    validDraft({
+      paidBy: [
+        { userId: 'a', amountPaid: 45 },
+        { userId: 'a', amountPaid: 45 },
+      ],
+    })
+  );
+  assert(
+    (duplicatePayers.problems.join(' ')).includes('payer may only appear once'),
+    'a duplicated payer is reported'
+  );
+
+  const negativePayer = validateDraft(validDraft({ paidBy: [{ userId: 'a', amountPaid: -90 }] }));
+  assert(
+    (negativePayer.problems.join(' ')).includes('cannot be negative'),
+    'a negative payer amount is reported'
+  );
+});
+
+test('a payer distribution that misses the total is rejected to the penny', () => {
+  const short = validateDraft(
+    validDraft({
+      amount: 90,
+      paidBy: [
+        { userId: 'a', amountPaid: 30 },
+        { userId: 'b', amountPaid: 30 },
+      ],
+    })
+  );
+  assertEqual(short.error, 'The amounts each payer fronted must add up to the expense total.', 'shortfall');
+
+  const offByAPenny = validateDraft(
+    validDraft({
+      amount: 0.02,
+      paidBy: [{ userId: 'a', amountPaid: 0.01 }],
+      participantIds: ['a'],
+    })
+  );
+  assert(offByAPenny.error !== null, 'a one-penny shortfall on a tiny total is still rejected');
+
+  const exactSplit = validateDraft(
+    validDraft({
+      amount: 90,
+      paidBy: [
+        { userId: 'a', amountPaid: 45 },
+        { userId: 'b', amountPaid: 45 },
+      ],
+    })
+  );
+  assertEqual(exactSplit.error, null, 'a multi-payer distribution that matches is accepted');
+});
+
+test('split-level errors surface through the draft validator', () => {
+  const badPercent = validateDraft(
+    validDraft({
+      splitType: 'PERCENT',
+      customValues: { a: 50, b: 40 },
+    })
+  );
+  assert(badPercent.error !== null, 'percentages that miss 100% are rejected');
+  assert((badPercent.error ?? '').includes('100'), 'the message states the requirement');
+
+  const badShares = validateDraft(
+    validDraft({
+      splitType: 'SHARES',
+      customValues: { a: 0, b: 0 },
+    })
+  );
+  assert((badShares.error ?? '').includes('shares'), 'zero shares are rejected');
+
+  const badExact = validateDraft(
+    validDraft({
+      splitType: 'EXACT',
+      customValues: { a: 30, b: 30 },
+    })
+  );
+  assert((badExact.error ?? '').includes('does not match'), 'exact amounts must reach the total');
+
+  const validExact = validateDraft(
+    validDraft({
+      splitType: 'EXACT',
+      customValues: { a: 45, b: 45 },
+    })
+  );
+  assertEqual(validExact.error, null, 'a valid exact split passes');
+});
+
+test('JPY drafts are validated in whole yen', () => {
+  const yen = validateDraft(
+    validDraft({
+      currency: 'JPY',
+      amount: 1000,
+      paidBy: [{ userId: 'a', amountPaid: 1000 }],
+      participantIds: ['a', 'b', 'c'],
+    })
+  );
+  assertEqual(yen.error, null, 'a JPY draft validates');
+  assert(
+    yen.splits.every((split) => Number.isInteger(split.owedAmount)),
+    'JPY splits never produce fractional yen'
+  );
+  assertEqual(sumSplitAmounts(yen.splits), 1000, 'JPY splits sum exactly');
 });
 
 /* ---------------------------------------------------------------- reporting */
