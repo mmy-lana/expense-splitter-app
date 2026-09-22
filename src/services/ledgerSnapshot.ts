@@ -598,9 +598,15 @@ export function parseExpensesFromCsv(csv: string): { expenses: ExpenseItem[]; re
     }
 
     const dateValue = cell(row, 'date');
-    const date = Number.isNaN(new Date(dateValue).getTime())
-      ? new Date().toISOString()
-      : new Date(dateValue).toISOString();
+    if (Number.isNaN(new Date(dateValue).getTime())) {
+      skipped.push({
+        entity: 'expense',
+        id: id || `row ${index + 1}`,
+        reason: `invalid date value "${dateValue}".`,
+      });
+      continue;
+    }
+    const date = new Date(dateValue).toISOString();
 
     expenses.push({
       id,

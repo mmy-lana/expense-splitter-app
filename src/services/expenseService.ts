@@ -122,6 +122,19 @@ export async function createExpense(
   return { ok: true, expenseId };
 }
 
+async function canMutateExpense(expense: ExpenseItem, actorUserId: UUID): Promise<boolean> {
+  if (expense.createdBy === actorUserId) return true;
+  if (expense.paidBy.some((p) => p.userId === actorUserId)) return true;
+  if (expense.splits.some((s) => s.userId === actorUserId)) return true;
+  if (expense.groupId) {
+    const group = await db.groups.get(expense.groupId);
+    if (group && group.members.some((m) => m.userId === actorUserId && m.role === 'ADMIN')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Updates an expense in place, keeping the previous state in the audit trail. */
 export async function updateExpense(
   expenseId: UUID,
@@ -133,6 +146,11 @@ export async function updateExpense(
 
   const existing = await db.expenses.get(expenseId);
   if (!existing) return { ok: false, error: 'That expense no longer exists.' };
+
+  const authorized = await canMutateExpense(existing, actorUserId);
+  if (!authorized) {
+    return { ok: false, error: 'You are not authorized to update this expense.' };
+  }
 
   const splitResult = computeSplits({
     totalAmount: draft.amount,
@@ -200,6 +218,11 @@ export async function deleteExpense(
 ): Promise<LedgerMutationResult> {
   const existing = await db.expenses.get(expenseId);
   if (!existing) return { ok: false, error: 'That expense no longer exists.' };
+
+  const authorized = await canMutateExpense(existing, actorUserId);
+  if (!authorized) {
+    return { ok: false, error: 'You are not authorized to delete this expense.' };
+  }
 
   const now = new Date().toISOString();
 

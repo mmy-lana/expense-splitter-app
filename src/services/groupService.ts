@@ -184,6 +184,14 @@ export async function addGroupMember(
 ): Promise<GroupMutationResult> {
   const group = await db.groups.get(groupId);
   if (!group) return { ok: false, error: 'That group no longer exists.' };
+
+  const isAdmin = group.members.some(
+    (member) => member.userId === actorUserId && member.role === 'ADMIN'
+  );
+  if (!isAdmin) {
+    return { ok: false, error: 'Only group administrators can add members.' };
+  }
+
   if (group.members.some((member) => member.userId === userId)) {
     return { ok: true, groupId, warnings: ['That person is already in this group.'] };
   }
@@ -224,6 +232,13 @@ export async function removeGroupMember(
   const group = await db.groups.get(groupId);
   if (!group) return { ok: false, error: 'That group no longer exists.' };
 
+  const isActorAdmin = group.members.some(
+    (member) => member.userId === actorUserId && member.role === 'ADMIN'
+  );
+  if (!isActorAdmin && actorUserId !== userId) {
+    return { ok: false, error: 'Only administrators or the members themselves can leave or remove members.' };
+  }
+
   const remainingMembers = group.members.filter((member) => member.userId !== userId);
   if (remainingMembers.length === group.members.length) {
     return { ok: false, error: 'That person is not in this group.' };
@@ -232,33 +247,48 @@ export async function removeGroupMember(
     return { ok: false, error: 'A group needs at least one member.' };
   }
 
-  const groupExpenses = await db.expenses.where('groupId').equals(groupId).toArray();
-  const involved = groupExpenses.filter(
-    (expense) =>
-      expense.paidBy.some((payer) => payer.userId === userId) ||
-      expense.splits.some((split) => split.userId === userId)
+  const isTargetAdmin = group.members.some(
+    (member) => member.userId === userId && member.role === 'ADMIN'
   );
-  if (involved.length > 0) {
-    return {
-      ok: false,
-      error: `They still appear on ${involved.length} expense${involved.length === 1 ? '' : 's'} in this group. Delete or reassign those first.`,
-    };
+  const remainingAdmins = remainingMembers.filter((member) => member.role === 'ADMIN');
+  if (isTargetAdmin && remainingAdmins.length === 0) {
+    return { ok: false, error: 'Cannot remove the sole administrator. Promote another member to admin first.' };
   }
 
+  let removalError: string | null = null;
   const now = new Date().toISOString();
-  await db.transaction('rw', db.groups, db.activities, async () => {
-    await db.groups.put({ ...group, members: remainingMembers, updatedAt: now });
+
+  await db.transaction('rw', db.groups, db.expenses, db.activities, async () => {
+    const currentGroup = await db.groups.get(groupId);
+    if (!currentGroup) {
+      removalError = 'That group no longer exists.';
+      return;
+    }
+
+    const groupExpenses = await db.expenses.where('groupId').equals(groupId).toArray();
+    const involved = groupExpenses.filter(
+      (expense) =>
+        expense.paidBy.some((payer) => payer.userId === userId) ||
+        expense.splits.some((split) => split.userId === userId)
+    );
+    if (involved.length > 0) {
+      removalError = `They still appear on ${involved.length} expense${involved.length === 1 ? '' : 's'} in this group. Delete or reassign those first.`;
+      return;
+    }
+
+    await db.groups.put({ ...currentGroup, members: remainingMembers, updatedAt: now });
     await db.activities.add(
       activity({
         action: 'MEMBER_REMOVED',
         actorUserId,
         entityId: groupId,
         groupId,
-        metadata: { description: `Member removed from ${group.name}` },
+        metadata: { description: `Member removed from ${currentGroup.name}` },
       })
     );
   });
 
+  if (removalError) return { ok: false, error: removalError };
   return { ok: true, groupId };
 }
 

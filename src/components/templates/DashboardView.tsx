@@ -208,7 +208,7 @@ export const DashboardView: FC<DashboardViewProps> = ({
             style={{ height: '100%' }}
           />
         </Col>
-        <Col xs={12} md={8}>
+        <Col xs={24} sm={12} md={8}>
           <div
             style={{
               padding: spacing.lg,
@@ -238,7 +238,7 @@ export const DashboardView: FC<DashboardViewProps> = ({
             </Typography.Text>
           </div>
         </Col>
-        <Col xs={12} md={8}>
+        <Col xs={24} sm={12} md={8}>
           <div
             style={{
               padding: spacing.lg,

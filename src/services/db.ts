@@ -63,11 +63,13 @@ export async function deleteDatabase(): Promise<void> {
   await db.delete();
 }
 
-/** Appends an audit-trail entry. Never throws into the calling UI flow. */
-export async function recordActivity(entry: ActivityLog): Promise<void> {
+/** Appends an audit-trail entry, returning a boolean status. */
+export async function recordActivity(entry: ActivityLog): Promise<boolean> {
   try {
     await db.activities.add(entry);
+    return true;
   } catch (error) {
     console.error('[MintSplit] Failed to persist activity log entry', error);
+    return false;
   }
 }

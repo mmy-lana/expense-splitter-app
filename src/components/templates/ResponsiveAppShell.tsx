@@ -278,10 +278,11 @@ export const ResponsiveAppShell: FC<ResponsiveAppShellProps> = ({
               icon={<PlusOutlined />}
               onClick={onAddExpense}
               aria-label="Add an expense"
+              className="mint-touch-target"
               style={{
                 backgroundColor: mintPalette.primary,
-                minHeight: 40,
-                minWidth: isMobile ? 40 : undefined,
+                minHeight: 44,
+                minWidth: isMobile ? 44 : undefined,
                 paddingInline: isMobile ? 8 : 16,
               }}
             >
@@ -323,11 +324,13 @@ export const ResponsiveAppShell: FC<ResponsiveAppShellProps> = ({
             <button
               type="button"
               aria-label="Switch who you are"
+              className="mint-touch-target"
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: spacing.sm,
-                minHeight: 40,
+                minHeight: 44,
+                minWidth: 44,
                 padding: `2px ${spacing.sm}px`,
                 borderRadius: radii.md,
                 border: `1px solid ${mintPalette.slateBorder}`,
@@ -355,7 +358,8 @@ export const ResponsiveAppShell: FC<ResponsiveAppShellProps> = ({
                 icon={<MenuOutlined />}
                 aria-label="More options"
                 onClick={() => setMobileMenuOpen(true)}
-                style={{ minHeight: 40, minWidth: 44 }}
+                className="mint-touch-target"
+                style={{ minHeight: 44, minWidth: 44 }}
               />
             </Tooltip>
           ) : null}
