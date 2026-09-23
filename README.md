@@ -54,7 +54,7 @@ Experience the core ledger mechanics immediately on the live deployment:
 ### Installation
 
 1. Clone the repository:
-   git clone https://github.com/your-username/expense-splitter-app.git
+   git clone https://github.com/mmy-lana/expense-splitter-app.git
    cd expense-splitter-app
 
 2. Install dependencies:
